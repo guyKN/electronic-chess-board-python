@@ -1,8 +1,9 @@
 import time
 
 import boardController
-
+import asyncio
 from ChessGame import ChessGame
+from BluetoothManager import BluetoothManager
 
 def read_loop():
     prev_board = None
@@ -27,10 +28,15 @@ def animation():
     while True:
         pass
 try:
+
     boardController.init()
-    read_loop()
+    # bluetoothManager =  BluetoothManager(None)
+    # asyncio.run(bluetoothManager.connection_loop())
+
     while True:
         game = ChessGame(white_is_engine=False, black_is_engine=True, engine_skill=20)
         game.play()
+
 finally:
+    print("cleanup")
     boardController.cleanup()

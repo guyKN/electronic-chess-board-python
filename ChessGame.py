@@ -20,7 +20,8 @@ def square_mask(square):
 
 class ChessGame:
     def __init__(self, *, board=chess.Board(), confirm_move_delay=0.35,
-                 white_is_engine=False, black_is_engine=True, engine_path="stockfish", engine_skill=21, use_opening_book= True, opening_book_path = "/home/pi/chess-engine/opening-book/Perfect2021.bin"):
+                 white_is_engine=False, black_is_engine=True, engine_path="/usr/games/stockfish", engine_skill=21,
+                 use_opening_book= True, opening_book_path = "/home/pi/chess-engine/opening-book/Perfect2021.bin"):
         self.board = board
         self.board.reset()
         self.is_engine = [black_is_engine, white_is_engine]
@@ -41,6 +42,9 @@ class ChessGame:
     def close(self):
         self.opening_book.close()
         self.engine.close()
+
+    def get_fen(self):
+        return self.board.fen()
 
     def play(self):
         self._wait_for_piece_setup()
@@ -160,7 +164,7 @@ class ChessGame:
                 extra_pieces = ~self._occupied() & physical_board_occupied
                 num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
                 # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
-                if num_wrong_pieces > 6:
+                if num_wrong_pieces >= 8:
                     boardController.setLeds(0)
                 else:
                     boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
