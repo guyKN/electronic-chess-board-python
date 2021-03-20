@@ -1,9 +1,15 @@
+import random
 import time
 
 import boardController
 import chess
-from chess import Square, SquareSet, engine, polyglot
-import random
+import datetime
+import chess.engine
+import chess.pgn
+from chess import Square, SquareSet, polyglot
+import json
+
+SETTINGS_PATH = "settings/settings.json"
 
 
 def lsb(square_set):
@@ -17,57 +23,190 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
+STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
+
+def wait_for_piece_setup():
+    prev_occupied = None
+    while True:
+        physical_board_occupied = boardController.scanBoard()
+        if physical_board_occupied != prev_occupied:
+            prev_occupied = physical_board_occupied
+            missing_pieces = STARTING_SQUARES & ~physical_board_occupied
+            extra_pieces = ~STARTING_SQUARES & physical_board_occupied
+            num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
+            # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
+            if num_wrong_pieces >= 16:
+                boardController.setLeds(0)
+            else:
+                boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
+            if missing_pieces == 0 and extra_pieces == 0:
+                break
+
+def open_engine(path="/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"):
+    engine = chess.engine.SimpleEngine.popen_uci(path)
+    engine.configure({"Hash": 16, "Use NNUE": False})
+    return engine
+
+def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin"):
+    return chess.polyglot.open_reader(path)
+
+legal_setting_keys = {"enable_engine", "engine_skill", "engine_color", "learning_mode"}
+
+def read_settings():
+    with open(SETTINGS_PATH) as json_settings:
+        data = json.load(json_settings)
+    return data
+
+def write_settings(settings):
+    with open(SETTINGS_PATH, "w") as out_file:
+        json.dump(settings, out_file, indent=4)
+
+
+
+
+class GameManager:
+    def __init__(self):
+        self.game = None
+        self._settings = read_settings()
+        self._engine = open_engine()
+        self._opening_book = open_opening_book()
+
+    def get_settings(self):
+        return self._settings
+
+    def update_settings(self, new_settings):
+
+        if not legal_setting_keys.issuperset(new_settings.keys()):
+            print("Illegal Key Given")
+            # illegal key given
+            return False
+        if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and new_settings["engine_color"] != "black":
+            # engine color must be white or black
+            print("engine color must be white or black")
+            return False
+
+
+        for key, value in new_settings.items():
+            self._settings[key] = value
+
+        write_settings(self._settings)
+        if self.game is not None:
+            self.game.learning_mode = self._settings["learning_mode"]
+
+        return True
+
+
+    def game_active(self):
+        return self.game is not None
+
+    def cleanup(self):
+        self._engine.close()
+        self._opening_book.close()
+        write_settings(self._settings)
+
+    def _create_game(self):
+        return ChessGame(
+            learning_mode=self._settings["learning_mode"],
+            white_is_engine=self._settings["enable_engine"] and self._settings["engine_color"] == "white",
+            black_is_engine=self._settings["enable_engine"] and self._settings["engine_color"] == "black",
+            engine_skill=int(self._settings["engine_skill"]),
+            engine=self._engine if self._settings["enable_engine"] else None,
+            opening_book=self._opening_book
+        )
+
+    def game_loop(self):
+        while True:
+            wait_for_piece_setup()
+            self.game = self._create_game()
+            print("game created")
+            self.game.play()
+            self.game = None
+
 
 class ChessGame:
-    def __init__(self, *, board=chess.Board(), confirm_move_delay=0.35,
-                 white_is_engine=False, black_is_engine=True, engine_path="/usr/games/stockfish", engine_skill=21,
-                 use_opening_book= True, opening_book_path = "/home/pi/chess-engine/opening-book/Perfect2021.bin"):
-        self.board = board
-        self.board.reset()
+    MAX_WRONG_PIECES_UNTIL_ABORT = 8
+    WRONG_PIECES_ABORT_DELAY = 5
+
+    def __init__(self, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.35, learning_mode = True,
+                 white_is_engine=False, black_is_engine=False,
+                 engine=None, engine_skill=20, opening_book=None):
+        self.learning_mode = learning_mode
+        self._board = chess.Board(start_fen)
         self.is_engine = [black_is_engine, white_is_engine]
         self.confirm_move_delay = confirm_move_delay
-        self.use_opening_book = use_opening_book
-        if use_opening_book:
-            self.opening_book = chess.polyglot.open_reader(opening_book_path)
-        self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19 # engine skill beyond 20 gives the engine additional tim to think
-        self.engine_skill = engine_skill
+        self._engine = engine
+        self._opening_book = opening_book
+        self._pgn_game = chess.pgn.Game()
+        self._pgn_node = self._pgn_game
+
+        if engine is None and (white_is_engine or black_is_engine):
+            raise ValueError("An engine must be passed as an argument if any player is an engine.")
+
+        if engine is not None:
+            engine.configure({"Skill Level": min(engine_skill, 20)})
+            self.engine_skill = engine_skill
+            self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
+
         self.game_aborted = False
 
-        if white_is_engine or black_is_engine:
-            self.engine = engine.SimpleEngine.popen_uci(engine_path)
-            self.engine.configure({"Hash": 16})
-            if engine_skill < 20:
-                self.engine.configure({"Skill Level": engine_skill})
+        self._setup_pgn()
 
-    def close(self):
-        self.opening_book.close()
-        self.engine.close()
+    def _push_pgn(self, move):
+        self._pgn_node = self._pgn_node.add_variation(move)
+
+    def _pop_pgn(self):
+        parent = self._pgn_node.parent
+        if parent is None:
+            raise ValueError("tried to pop pgn while at the root node")
+
+        parent.remove_variation(self._pgn_node)
+        self._pgn_node = parent
+
+    def get_pgn(self):
+        return str(self._pgn_game)
+
+    def _player_name(self, player):
+        if self.is_engine[player]:
+            return "Stockfish Level " + str(self.engine_skill)
+        else:
+            return "Human"
+
+    def _setup_pgn(self):
+        self._pgn_game.headers["Event"] = "Electronic Chess Board"
+        self._pgn_game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
+        self._pgn_game.headers["White"] = self._player_name(chess.WHITE)
+        self._pgn_game.headers["Black"] = self._player_name(chess.BLACK)
+        self._pgn_game.headers["Result"] = "*"
 
     def get_fen(self):
-        return self.board.fen()
+        return self._board.fen()
 
     def play(self):
-        self._wait_for_piece_setup()
         while not self.game_aborted:
-            if self.is_engine[self.board.turn]:
+            if self.is_engine[self._board.turn]:
                 self._do_engine_move()
             else:
                 self._read_player_move()
             if self.check_game_end():
                 break
-        self.close()
+            print()
+            print(self.get_pgn(), end="\n\n")
+
+    def reset(self):
+        self._board.reset_board()
+        self.game_aborted = False
 
     def check_game_end(self):
         # noinspection PyPep8Naming
         GAME_END_DELAY = 4
-        if self.board.is_checkmate():
-            loser_king = self.board.pieces_mask(piece_type=chess.KING, color=self.board.turn)
+        if self._board.is_checkmate():
+            loser_king = self._board.pieces_mask(piece_type=chess.KING, color=self._board.turn)
             boardController.setLeds(fast_blink_leds=loser_king)
             time.sleep(GAME_END_DELAY)
             boardController.setLeds(0)
             return True
-        elif self.board.is_stalemate() or self.board.is_insufficient_material() or self.board.can_claim_draw():
-            kings = self.board.kings
+        elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw():
+            kings = self._board.kings
             boardController.setLeds(fast_blink_leds=kings)
             time.sleep(GAME_END_DELAY)
             boardController.setLeds(0)
@@ -75,20 +214,24 @@ class ChessGame:
         else:
             return False
 
+
+
     def _engine_best_move(self):
         # randomly decide whether to use opening book or not
-        if self.use_opening_book and ( self.engine_skill == -1 or random.uniform(1,20) <= self.engine_skill):
+        if (self._opening_book is not None) and (random.uniform(1, 20) <= self.engine_skill):
             try:
-                entry = self.opening_book.choice(self.board)
-                time.sleep(self.engine_time/4) # todo: make a better delay
+                entry = self._opening_book.choice(self._board)
+                time.sleep(self.engine_time / 4)  # todo: make a better delay
                 print("Engine move from Opening book: ", str(entry.move))
                 return entry.move
             except IndexError:
                 # there is not stored entry in the opening book. Use the engine normally
                 pass
-        result = self.engine.play(self.board, engine.Limit(time=self.engine_time),
-                                  info=engine.Info(engine.INFO_BASIC | engine.INFO_SCORE))
-        print("engine move: ", result.move, ". nps: ", result.info["nps"], ". score: ", result.info["score"])
+        result = self._engine.play(self._board, chess.engine.Limit(time=self.engine_time),
+                                   info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE))
+        print("\nengine move: ", result.move, ".\ntime: ", result.info["time"], "\nnps: ", result.info["nps"],
+              "\nscore: ", result.info["score"], "\ndepth: ", result.info["depth"], "\nseldepth",
+              result.info["seldepth"])
 
         return result.move
 
@@ -100,10 +243,9 @@ class ChessGame:
         src_mask = square_mask(src)
         dst = engine_move.to_square
         dst_mask = square_mask(dst)
-        print(engine_move)
         occpied_before_move = self._occupied()
         is_capture = dst in occpied_before_move
-        self.board.push(engine_move)
+        self._board.push(engine_move)
         occupied_after_move = self._occupied()
 
         changed_squares = (occpied_before_move ^ occupied_after_move) | square_mask(dst)
@@ -113,27 +255,33 @@ class ChessGame:
         boardController.resetBlinkTimer()
         while True:
             physical_board_occupied = boardController.scanBoard()
-            if physical_board_occupied == chess.Board().occupied and\
-                    physical_board_occupied != self._occupied() and\
-                    physical_board_occupied != occpied_before_move:
-                # the player has restarted the game
-                self.game_aborted = True
-                return False
-            elif physical_board_occupied != prev_occupied:
+            if physical_board_occupied != prev_occupied:
                 prev_occupied = physical_board_occupied
-
+                wrong_pieces = physical_board_occupied ^ self._occupied() - changed_squares
                 extra_pieces = physical_board_occupied - self._occupied() - changed_squares
                 missing_pieces = self._occupied() - physical_board_occupied - changed_squares
+
                 if physical_board_occupied == self._occupied() and (not is_capture or capture_picked_up):
                     # the player has successfully made the engine move
-                    return
+                    self._push_pgn(engine_move)
+                    return True
+                elif physical_board_occupied == chess.Board().occupied and \
+                        physical_board_occupied != self._occupied() and \
+                        physical_board_occupied != occpied_before_move:
+                    # the player has restarted the game
+                    self.game_aborted = True
+                    return False
+                elif popcount(wrong_pieces) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
+                    prev_occupied = None
+                    if self.confirm_abort():
+                        return False
                 elif dst not in physical_board_occupied:
                     capture_picked_up = True
                 boardController.setLeds(slow_blink_leds=src_mask, slow_blink_leds_2=dst_mask,
                                         fast_blink_leds=extra_pieces, fast_blink_leds_2=missing_pieces)
 
     def _legal_moves_from(self, square):
-        for move in self.board.legal_moves:
+        for move in self._board.legal_moves:
             if move.from_square == square:
                 yield move
 
@@ -141,36 +289,19 @@ class ChessGame:
         bb = 0
         for move in self._legal_moves_from(square):
             bb |= 1 << move.to_square
-
         return bb
 
     # todo: find better name
     def _occupied(self):
-        return SquareSet(self.board.occupied)
+        return SquareSet(self._board.occupied)
 
     def _active_player_pieces(self):
-        return SquareSet(self.board.occupied_co[self.board.turn])
+        return SquareSet(self._board.occupied_co[self._board.turn])
 
     def _inactive_player_pieces(self):
-        return SquareSet(self.board.occupied_co[not self.board.turn])
+        return SquareSet(self._board.occupied_co[not self._board.turn])
 
-    def _wait_for_piece_setup(self):
-        prev_occupied = None
-        while True:
-            physical_board_occupied = boardController.scanBoard()
-            if physical_board_occupied != prev_occupied:
-                prev_occupied = physical_board_occupied
-                missing_pieces = self._occupied() & ~physical_board_occupied
-                extra_pieces = ~self._occupied() & physical_board_occupied
-                num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
-                # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
-                if num_wrong_pieces >= 8:
-                    boardController.setLeds(0)
-                else:
-                    boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
-                if missing_pieces == 0 and extra_pieces == 0:
-                    break
-
+    # todo: allow a player to resign by illlegally moving their king
     def _read_player_move(self):
         prev_occupied = None
         while True:
@@ -191,6 +322,10 @@ class ChessGame:
                     # the player has set up the pieces back up to the starting position.
                     self.game_aborted = True
                     return
+                elif popcount(wrong_pieces) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
+                    prev_occupied = None
+                    if self.confirm_abort():
+                        return
                 elif popcount(active_player_missing_pieces) == 1:
                     # the active player has picked up a piece
                     # we also allow an opponent's piece to be picked up, if the player wants to
@@ -232,6 +367,10 @@ class ChessGame:
                     # the player has restarted the game
                     self.game_aborted = True
                     return False
+                elif popcount(wrong_pieces) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
+                    prev_occupied = None
+                    if self.confirm_abort():
+                        return
                 elif active_player_missing_pieces != src_square_mask:
                     # the player has put the piece back, or picked up another piece
                     return False
@@ -242,19 +381,19 @@ class ChessGame:
                     boardController.setLeds(const_leds=square_mask(capture_square), slow_blink_leds=src_square_mask)
                 elif capture_square is not None and not wrong_pieces:
                     # the player has made a legal capture
-                    move = self.board.find_move(src_square, capture_square)
+                    move = self._board.find_move(src_square, capture_square)
                     if self._complete_move(move):
                         return True
                 elif popcount(extra_legal_pieces) == 1 and not extra_illegal_pieces and not opponent_missing_pieces:
                     # the player has made a legal non-capture move
                     dst_square = lsb(extra_legal_pieces)
-                    move = self.board.find_move(src_square, dst_square)
+                    move = self._board.find_move(src_square, dst_square)
                     prev_occupied = None
                     if self._complete_move(move):
                         return True
 
                 else:
-                    boardController.setLeds(const_leds=legal_moves,
+                    boardController.setLeds(const_leds=legal_moves if self.learning_mode else 0,
                                             slow_blink_leds=src_square_mask,
                                             fast_blink_leds=extra_pieces,
                                             fast_blink_leds_2=missing_pieces ^ src_square_mask)
@@ -267,7 +406,7 @@ class ChessGame:
         dst_mask = square_mask(move.to_square)
 
         occupied_before_move = self._occupied()
-        self.board.push(move)
+        self._board.push(move)
         occupied_after_move = self._occupied()
 
         changed_squares = occupied_before_move ^ occupied_after_move
@@ -279,7 +418,7 @@ class ChessGame:
             if self._confirm_move(move):
                 return True
             else:
-                self.board.pop()
+                self._board.pop()
                 return False
 
         prev_occupied = None
@@ -298,11 +437,11 @@ class ChessGame:
                     if self._confirm_move(move):
                         return True
                     else:
-                        self.board.pop()
+                        self._board.pop()
                         return False
                 elif not wrong_pieces.issuperset(changed_squares_indirect):
                     # the player has moved another unrelated piece, meaning that the move was aborted
-                    self.board.pop()
+                    self._board.pop()
                     return False
                 else:
                     boardController.setLeds(const_leds=dst_mask,
@@ -316,4 +455,22 @@ class ChessGame:
             if physical_board_occupied != self._occupied():
                 return False
         print("player move: ", str(move))
+        self._push_pgn(move)
+        return True
+
+    def confirm_abort(self):
+        boardController.setLeds(0)
+        print("confirming abort")
+        prev_occupied = None
+        prev_time = time.time()
+        while time.time() - prev_time <= ChessGame.WRONG_PIECES_ABORT_DELAY:
+            physical_board_occupied = boardController.scanBoard()
+            if physical_board_occupied != prev_occupied:
+                prev_occupied = physical_board_occupied
+                wrong_pieces = self._occupied() ^ physical_board_occupied
+                if popcount(wrong_pieces) <= ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
+                    print("abort canceled")
+                    return False
+        self.game_aborted = True
+        print("aborting game")
         return True

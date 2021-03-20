@@ -2,21 +2,26 @@ import time
 
 import boardController
 import asyncio
-from ChessGame import ChessGame
+from ChessGame import ChessGame, GameManager
 from BluetoothManager import BluetoothManager
 
 def read_loop():
     prev_board = None
     prev_time = time.time()
+    scans = 0
     while True:
+        scans+=1
         board = boardController.scanBoard()
         if board != prev_board:
             prev_time = time.time()
             prev_board = board
             print()
+            print("scans: ", scans)
             print(board)
             print()
             boardController.setLeds(board)
+
+            scans = 0
 
         if time.time() - prev_time > 1:
             prev_time = time.time()
@@ -27,16 +32,19 @@ def animation():
                             slow_blink_leds_2=0x55AA55AA55AA55AA)
     while True:
         pass
+
+game_manager = None
 try:
 
     boardController.init()
-    # bluetoothManager =  BluetoothManager(None)
-    # asyncio.run(bluetoothManager.connection_loop())
 
-    while True:
-        game = ChessGame(white_is_engine=False, black_is_engine=True, engine_skill=20)
-        game.play()
+    game_manager = GameManager()
+
+    bluetoothManager =  BluetoothManager(game_manager)
+    game_manager.game_loop()
 
 finally:
     print("cleanup")
     boardController.cleanup()
+    if game_manager is not None:
+        game_manager.cleanup()
