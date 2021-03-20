@@ -9,6 +9,8 @@ import chess.pgn
 from chess import Square, SquareSet, polyglot
 import json
 
+from BluetoothManager import BluetoothManager
+
 SETTINGS_PATH = "settings/settings.json"
 
 
@@ -70,12 +72,12 @@ class GameManager:
         self._settings = read_settings()
         self._engine = open_engine()
         self._opening_book = open_opening_book()
+        self.bluetooth_manager = BluetoothManager(self)
 
     def get_settings(self):
         return self._settings
 
     def update_settings(self, new_settings):
-
         if not legal_setting_keys.issuperset(new_settings.keys()):
             print("Illegal Key Given")
             # illegal key given
@@ -111,7 +113,8 @@ class GameManager:
             black_is_engine=self._settings["enable_engine"] and self._settings["engine_color"] == "black",
             engine_skill=int(self._settings["engine_skill"]),
             engine=self._engine if self._settings["enable_engine"] else None,
-            opening_book=self._opening_book
+            opening_book=self._opening_book,
+            game_manger=self
         )
 
     def game_loop(self):
@@ -122,6 +125,10 @@ class GameManager:
             self.game.play()
             self.game = None
 
+    def on_game_move(self, move):
+        pgn = self.game.get_pgn()
+        self.bluetooth_manager.write_pgn(pgn)
+
 
 class ChessGame:
     MAX_WRONG_PIECES_UNTIL_ABORT = 8
@@ -129,7 +136,7 @@ class ChessGame:
 
     def __init__(self, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.35, learning_mode = True,
                  white_is_engine=False, black_is_engine=False,
-                 engine=None, engine_skill=20, opening_book=None):
+                 engine=None, engine_skill=20, opening_book=None, game_manger = None):
         self.learning_mode = learning_mode
         self._board = chess.Board(start_fen)
         self.is_engine = [black_is_engine, white_is_engine]
@@ -138,6 +145,7 @@ class ChessGame:
         self._opening_book = opening_book
         self._pgn_game = chess.pgn.Game()
         self._pgn_node = self._pgn_game
+        self._game_manager = game_manger
 
         if engine is None and (white_is_engine or black_is_engine):
             raise ValueError("An engine must be passed as an argument if any player is an engine.")
@@ -151,8 +159,10 @@ class ChessGame:
 
         self._setup_pgn()
 
-    def _push_pgn(self, move):
+    def _store_move(self, move):
         self._pgn_node = self._pgn_node.add_variation(move)
+        if self._game_manager is not None:
+            self._game_manager.on_game_move(move)
 
     def _pop_pgn(self):
         parent = self._pgn_node.parent
@@ -174,6 +184,7 @@ class ChessGame:
     def _setup_pgn(self):
         self._pgn_game.headers["Event"] = "Electronic Chess Board"
         self._pgn_game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
+        self._pgn_game.headers["Round"] = datetime.datetime.now().strftime("%Y.%m.%d")
         self._pgn_game.headers["White"] = self._player_name(chess.WHITE)
         self._pgn_game.headers["Black"] = self._player_name(chess.BLACK)
         self._pgn_game.headers["Result"] = "*"
@@ -263,7 +274,7 @@ class ChessGame:
 
                 if physical_board_occupied == self._occupied() and (not is_capture or capture_picked_up):
                     # the player has successfully made the engine move
-                    self._push_pgn(engine_move)
+                    self._store_move(engine_move)
                     return True
                 elif physical_board_occupied == chess.Board().occupied and \
                         physical_board_occupied != self._occupied() and \
@@ -455,7 +466,7 @@ class ChessGame:
             if physical_board_occupied != self._occupied():
                 return False
         print("player move: ", str(move))
-        self._push_pgn(move)
+        self._store_move(move)
         return True
 
     def confirm_abort(self):

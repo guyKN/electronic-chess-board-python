@@ -37,10 +37,7 @@ game_manager = None
 try:
 
     boardController.init()
-
     game_manager = GameManager()
-
-    bluetoothManager =  BluetoothManager(game_manager)
     game_manager.game_loop()
 
 finally:

@@ -1,12 +1,12 @@
+import asyncio
+import json
 import os
 import threading
 from threading import Thread
-import asyncio
-
-import json
 
 import bluetooth
 from bluetooth import BluetoothSocket
+
 
 def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
@@ -15,6 +15,7 @@ def _assert_thread(thread_name, error_message):
 
 class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
+
     class ClientToServerActions:
         REQUEST_READ_FEN = 0
         REQUEST_READ_PGN = 1
@@ -46,8 +47,8 @@ class BluetoothManager:
 
     @staticmethod
     def encode_message(action, data):
-        return action.to_bytes(1, byteorder="big", signed=True) +\
-               len(data).to_bytes(BluetoothManager.MESSAGE_HEAD_LENGTH, byteorder="big", signed=True) +\
+        return action.to_bytes(1, byteorder="big", signed=True) + \
+               len(data).to_bytes(BluetoothManager.MESSAGE_HEAD_LENGTH, byteorder="big", signed=True) + \
                bytes(data, "utf-8")
 
     @staticmethod
@@ -100,7 +101,7 @@ class BluetoothManager:
         self._client_socket = None
         self._client_info = None
 
-    def _handle_message(self, action , data):
+    def _handle_message(self, action, data):
         if action == BluetoothManager.ClientToServerActions.REQUEST_READ_FEN:
             if self.game_manager.game is None:
                 self.write_message(
@@ -124,7 +125,7 @@ class BluetoothManager:
             settings = self.game_manager.get_settings()
             self.write_message(
                 action=BluetoothManager.ServerToClientActions.RET_READ_PREFERENCES,
-                data = json.dumps(settings)
+                data=json.dumps(settings)
             )
         elif action == BluetoothManager.ClientToServerActions.WRITE_PREFERENCES:
             settings = json.loads(data)
@@ -146,10 +147,12 @@ class BluetoothManager:
         else:
             print("invalid message action")
 
-
     # Writes data to the via bluetooth. may be called from any thread
     def write_message(self, action, data):
         self._event_loop.call_soon_threadsafe(self._write, action, data)
+
+    def write_pgn(self, pgn: str):
+        self.write_message(BluetoothManager.ServerToClientActions.RET_READ_PGN, pgn)
 
     # must be called from the thread 'write-tread'
     def _write(self, action, data):
