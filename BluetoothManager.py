@@ -7,6 +7,8 @@ from threading import Thread
 import bluetooth
 from bluetooth import BluetoothSocket
 
+import FileManager
+
 
 def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
@@ -21,6 +23,10 @@ class BluetoothManager:
         REQUEST_READ_PGN = 1
         REQUEST_READ_PREFERENCES = 2
         WRITE_PREFERENCES = 3
+        REQUEST_PGN_FILE_NAMES = 4
+        REQUEST_READ_PGN_FILE = 5
+        REQUEST_ARCHIVE_PGN_FILE = 6
+        REQUEST_PGN_FILE_COUNT = 7
 
     class ServerToClientActions:
         RET_READ_FEN = 0
@@ -29,6 +35,9 @@ class BluetoothManager:
         RET_WRITE_PREFERENCES = 3
         ON_MOVE = 4
         ON_ERROR = 5
+        RET_PGN_FILE_NAMES = 6
+        RET_PGN_FILE = 7
+        RET_PGN_FILE_COUNT = 8
 
     _UUID = "6c08ff89-2218-449f-9590-66c704994db9"
 
@@ -106,21 +115,19 @@ class BluetoothManager:
             if self.game_manager.game is None:
                 self.write_message(
                     action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                    data="The game has not yet started"
-                )
+                    data="The game has not yet started")
             else:
                 fen = self.game_manager.game.get_fen()
                 self.write_message(
                     action=BluetoothManager.ServerToClientActions.RET_READ_FEN,
-                    data=fen
-                )
+                    data=fen)
 
         elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PGN:
-            pgn = self.game_manager.game.get_pgn()
-            self.write_message(
-                action=BluetoothManager.ServerToClientActions.RET_READ_PGN,
-                data=pgn
-            )
+            if self.game_manager.game is not None:
+                pgn = self.game_manager.game.get_pgn_string()
+                self.write_message(
+                    action=BluetoothManager.ServerToClientActions.RET_READ_PGN,
+                    data=pgn)
         elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PREFERENCES:
             settings = self.game_manager.get_settings()
             self.write_message(
@@ -135,14 +142,62 @@ class BluetoothManager:
                 settings = self.game_manager.get_settings()
                 self.write_message(
                     action=BluetoothManager.ServerToClientActions.RET_READ_PREFERENCES,
-                    data=json.dumps(settings)
-                )
+                    data=json.dumps(settings))
             else:
                 self.write_message(
                     action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                    data="Error writing Preferences"
-                )
+                    data="Error writing Preferences")
 
+        elif action == BluetoothManager.ClientToServerActions.REQUEST_PGN_FILE_NAMES:
+            pgn_file_names = FileManager.saved_games()
+            file_names_json = json.dumps(pgn_file_names)
+            self.write_message(
+                action=BluetoothManager.ServerToClientActions.RET_PGN_FILE_NAMES,
+                data=file_names_json)
+        elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PGN_FILE:
+            if FileManager.is_valid_pgn_file_name(data):
+                try:
+                    pgn = FileManager.read_pgn(data)
+                    # put the filename as the first line of the message
+                    message = data + "\n" + pgn
+                    self.write_message(
+                        action=BluetoothManager.ServerToClientActions.RET_PGN_FILE,
+                        data=message)
+                except OSError:
+                    error_message = "Invalid file: {}".format(data)
+                    print(error_message)
+                    self.write_message(
+                        action=BluetoothManager.ServerToClientActions.ON_ERROR,
+                        data=error_message)
+            else:
+                error_message = "Illegal file requested: {}".format(data)
+                print(error_message)
+                self.write_message(
+                    action=BluetoothManager.ServerToClientActions.ON_ERROR,
+                    data=error_message)
+
+        elif action == BluetoothManager.ClientToServerActions.REQUEST_ARCHIVE_PGN_FILE:
+            if FileManager.is_valid_pgn_file_name(data):
+                try:
+                    FileManager.archive_file(data)
+                except OSError:
+                    error_message = "Invalid file: {}".format(data)
+                    print(error_message)
+                    self.write_message(
+                        action=BluetoothManager.ServerToClientActions.ON_ERROR,
+                        data=error_message)
+            else:
+                error_message = "Invalid file: {}".format(data)
+                print(error_message)
+                self.write_message(
+                    action=BluetoothManager.ServerToClientActions.ON_ERROR,
+                    data=error_message)
+
+        elif action == BluetoothManager.ClientToServerActions.REQUEST_PGN_FILE_COUNT:
+            num_files = len(FileManager.saved_games())
+            self.write_message(
+                action=BluetoothManager.ServerToClientActions.RET_PGN_FILE_COUNT,
+                data=str(num_files))
 
         else:
             print("invalid message action")
@@ -154,6 +209,13 @@ class BluetoothManager:
     def write_pgn(self, pgn: str):
         self.write_message(BluetoothManager.ServerToClientActions.RET_READ_PGN, pgn)
 
+    def write_pgn_file_count(self):
+        num_files = len(FileManager.saved_games())
+        self.write_message(
+            action=BluetoothManager.ServerToClientActions.RET_PGN_FILE_COUNT,
+            data=str(num_files))
+
+
     # must be called from the thread 'write-tread'
     def _write(self, action, data):
         print()
@@ -163,6 +225,7 @@ class BluetoothManager:
         print()
         _assert_thread("write-thread", "Must call write() from the write thread")
         if self._client_socket is None:
+            print("Failed to write")
             return False
         try:
             self._client_socket.send(BluetoothManager.encode_message(action, data))

@@ -1,18 +1,14 @@
+import datetime
 import random
 import time
 
 import boardController
 import chess
-import datetime
 import chess.engine
 import chess.pgn
 from chess import Square, SquareSet, polyglot
-import json
-
 from BluetoothManager import BluetoothManager
-
-SETTINGS_PATH = "settings/settings.json"
-
+import FileManager
 
 def lsb(square_set):
     return Square(chess.lsb(int(square_set)))
@@ -25,7 +21,9 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
+
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
+
 
 def wait_for_piece_setup():
     prev_occupied = None
@@ -44,32 +42,24 @@ def wait_for_piece_setup():
             if missing_pieces == 0 and extra_pieces == 0:
                 break
 
+
 def open_engine(path="/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"):
     engine = chess.engine.SimpleEngine.popen_uci(path)
     engine.configure({"Hash": 16, "Use NNUE": False})
     return engine
 
+
 def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin"):
     return chess.polyglot.open_reader(path)
 
+
 legal_setting_keys = {"enable_engine", "engine_skill", "engine_color", "learning_mode"}
-
-def read_settings():
-    with open(SETTINGS_PATH) as json_settings:
-        data = json.load(json_settings)
-    return data
-
-def write_settings(settings):
-    with open(SETTINGS_PATH, "w") as out_file:
-        json.dump(settings, out_file, indent=4)
-
-
 
 
 class GameManager:
     def __init__(self):
         self.game = None
-        self._settings = read_settings()
+        self._settings = FileManager.read_settings()
         self._engine = open_engine()
         self._opening_book = open_opening_book()
         self.bluetooth_manager = BluetoothManager(self)
@@ -82,21 +72,30 @@ class GameManager:
             print("Illegal Key Given")
             # illegal key given
             return False
-        if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and new_settings["engine_color"] != "black":
+        if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and \
+                new_settings["engine_color"] != "black":
             # engine color must be white or black
             print("engine color must be white or black")
             return False
 
+        if "engine_skill" in new_settings.keys():
+            try:
+                engine_skill = int(new_settings["engine_skill"])
+            except ValueError:
+                print("Engine skill must be a number")
+                return False
+            if engine_skill < 1:
+                print("Engine skill must be positive")
+                return False
 
         for key, value in new_settings.items():
             self._settings[key] = value
 
-        write_settings(self._settings)
+        FileManager.write_settings(self._settings)
         if self.game is not None:
             self.game.learning_mode = self._settings["learning_mode"]
 
         return True
-
 
     def game_active(self):
         return self.game is not None
@@ -104,7 +103,7 @@ class GameManager:
     def cleanup(self):
         self._engine.close()
         self._opening_book.close()
-        write_settings(self._settings)
+        FileManager.write_settings(self._settings)
 
     def _create_game(self):
         return ChessGame(
@@ -114,7 +113,8 @@ class GameManager:
             engine_skill=int(self._settings["engine_skill"]),
             engine=self._engine if self._settings["enable_engine"] else None,
             opening_book=self._opening_book,
-            game_manger=self
+            game_manger=self,
+            pgn_round=self._settings["round"]
         )
 
     def game_loop(self):
@@ -124,19 +124,23 @@ class GameManager:
             print("game created")
             self.game.play()
             self.game = None
+            self._settings["round"] += 1
+            FileManager.write_settings(self._settings)
 
     def on_game_move(self, move):
-        pgn = self.game.get_pgn()
+        pgn = self.game.get_pgn_string()
         self.bluetooth_manager.write_pgn(pgn)
-
+    def on_game_end(self):
+        FileManager.write_pgn(self.game.get_pgn())
+        self.bluetooth_manager.write_pgn_file_count()
 
 class ChessGame:
     MAX_WRONG_PIECES_UNTIL_ABORT = 8
-    WRONG_PIECES_ABORT_DELAY = 5
+    WRONG_PIECES_ABORT_DELAY = 2.5
 
-    def __init__(self, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.35, learning_mode = True,
+    def __init__(self, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.35, learning_mode=True,
                  white_is_engine=False, black_is_engine=False,
-                 engine=None, engine_skill=20, opening_book=None, game_manger = None):
+                 engine=None, engine_skill=20, opening_book=None, game_manger=None, pgn_round=1):
         self.learning_mode = learning_mode
         self._board = chess.Board(start_fen)
         self.is_engine = [black_is_engine, white_is_engine]
@@ -146,6 +150,7 @@ class ChessGame:
         self._pgn_game = chess.pgn.Game()
         self._pgn_node = self._pgn_game
         self._game_manager = game_manger
+        self._pgn_round = pgn_round
 
         if engine is None and (white_is_engine or black_is_engine):
             raise ValueError("An engine must be passed as an argument if any player is an engine.")
@@ -172,8 +177,10 @@ class ChessGame:
         parent.remove_variation(self._pgn_node)
         self._pgn_node = parent
 
-    def get_pgn(self):
+    def get_pgn_string(self):
         return str(self._pgn_game)
+    def get_pgn(self):
+        return self._pgn_game
 
     def _player_name(self, player):
         if self.is_engine[player]:
@@ -184,7 +191,7 @@ class ChessGame:
     def _setup_pgn(self):
         self._pgn_game.headers["Event"] = "Electronic Chess Board"
         self._pgn_game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
-        self._pgn_game.headers["Round"] = datetime.datetime.now().strftime("%Y.%m.%d")
+        self._pgn_game.headers["Round"] = str(self._pgn_round)
         self._pgn_game.headers["White"] = self._player_name(chess.WHITE)
         self._pgn_game.headers["Black"] = self._player_name(chess.BLACK)
         self._pgn_game.headers["Result"] = "*"
@@ -200,8 +207,8 @@ class ChessGame:
                 self._read_player_move()
             if self.check_game_end():
                 break
-            print()
-            print(self.get_pgn(), end="\n\n")
+        if self._board.ply() > 0:
+            self._game_manager.on_game_end()
 
     def reset(self):
         self._board.reset_board()
@@ -224,8 +231,6 @@ class ChessGame:
             return True
         else:
             return False
-
-
 
     def _engine_best_move(self):
         # randomly decide whether to use opening book or not

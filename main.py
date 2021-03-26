@@ -35,7 +35,6 @@ def animation():
 
 game_manager = None
 try:
-
     boardController.init()
     game_manager = GameManager()
     game_manager.game_loop()
