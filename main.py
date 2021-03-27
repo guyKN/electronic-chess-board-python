@@ -1,7 +1,7 @@
 import time
 
 import boardController
-from GameManager import GameManager
+from StateManager import StateManager
 
 def read_loop():
     prev_board = None
@@ -34,7 +34,7 @@ def animation():
 game_manager = None
 try:
     boardController.init()
-    game_manager = GameManager()
+    game_manager = StateManager()
     game_manager.game_loop()
 
 finally:

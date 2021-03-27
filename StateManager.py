@@ -28,7 +28,7 @@ State machine structure:
 Base class state, which represents a state of the chessboard. Has method enter, which is called when the 
 """
 
-class GameManager:
+class StateManager:
     def __init__(self):
         self.board = boardController.scanBoard()
         self.game = None
@@ -52,14 +52,17 @@ class GameManager:
 
     def go_to_state(self, state: State):
         self.state = state
-        self.state.on_enter_state()
-        self.state.on_board_changed(self.board)
+        self.init_state(state)
 
     def on_board_change(self, board):
-        print("on board change")
         self.board = board
         self.state.on_board_changed(board)
 
+    # Called by other parents of states when they want to switch their subStates, but still remain the state visible to the stateManager.
+    # Should not be called by non-parent states. those use go_to_state()
+    def init_state(self, state):
+        state.on_enter_state()
+        state.on_board_changed(self.board)
 
     def get_settings(self):
         return self._settings

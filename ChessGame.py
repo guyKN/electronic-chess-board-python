@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import datetime
 import random
 import time
@@ -11,7 +10,7 @@ import chess.engine
 import chess.pgn
 from chess import Square, SquareSet
 
-import GameManager
+import StateManager
 from State import State
 
 
@@ -26,10 +25,12 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
+
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
+
 class WaitingForSetupState(State):
-    def __init__(self, game_manager: GameManager.GameManager):
+    def __init__(self, game_manager: StateManager.StateManager):
         self._game_manager = game_manager
 
     def on_enter_state(self):
@@ -47,6 +48,96 @@ class WaitingForSetupState(State):
         else:
             boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
 
+
+class PlayerMoveBaseState(State):
+    def __init__(self, chess_game: ChessGame):
+        self._chess_game = chess_game
+
+    def on_enter_state(self):
+        pass
+
+    def on_board_changed(self, physical_board_occupied: chess.SquareSet):
+        wrong_pieces = self._chess_game.occupied() ^ physical_board_occupied
+        extra_pieces = physical_board_occupied - self._chess_game.occupied()
+        missing_pieces = self._chess_game.occupied() - physical_board_occupied
+
+        active_player_missing_pieces = missing_pieces & self._chess_game.active_player_pieces()
+        opponent_missing_pieces = missing_pieces & self._chess_game.inactive_player_pieces()
+
+        if physical_board_occupied == self._chess_game.occupied():
+            # the position on the physical board is exactly the same as the one on the board in memory. no leds needed.
+            boardController.setLeds(0)
+        elif popcount(active_player_missing_pieces) == 1:
+            # the active player has picked up a piece
+            # we also allow an opponent's piece to be picked up, if the player wants to
+            # capture by picking up an enemy piece first and only then picking up his own piece
+            src_square = lsb(active_player_missing_pieces)
+            player_move_state = PlayerMoveFromSquareState(src_square=src_square,
+                                                          on_cancel_state=self,
+                                                          chess_game=self._chess_game)
+
+            self._chess_game.go_to_state(player_move_state)
+        else:
+            # A piece has been placed or removed from the board without reason.
+            # Alert the user, by blinking its led
+            boardController.setLeds(fast_blink_leds=missing_pieces, fast_blink_leds_2=extra_pieces)
+
+
+class PlayerMoveFromSquareState(State):
+
+    def __init__(self, src_square: Square, on_cancel_state: State, chess_game: ChessGame):
+
+        self._chess_game = chess_game
+        self._on_cancel_state = on_cancel_state
+        self._src_square = src_square
+        self._src_square_mask = square_mask(src_square)
+        self._legal_moves = chess_game.legal_moves_bb_from(src_square)
+
+        self._capture_square = None
+
+    def on_enter_state(self):
+        # todo: should self.capture_square be reset here too?
+        boardController.resetBlinkTimer()
+
+    def on_board_changed(self, physical_board_occupied: chess.SquareSet):
+        print("inside of on_board_changed()")
+        wrong_pieces = self._chess_game.occupied() ^ physical_board_occupied ^ self._src_square_mask
+
+        extra_pieces = physical_board_occupied - self._chess_game.occupied()
+        extra_legal_pieces = extra_pieces & self._legal_moves
+        extra_illegal_pieces = extra_pieces & ~self._legal_moves
+
+        missing_pieces = self._chess_game.occupied() - physical_board_occupied
+        active_player_missing_pieces = missing_pieces & self._chess_game.active_player_pieces()
+
+        opponent_missing_pieces = missing_pieces & self._chess_game.inactive_player_pieces()
+        opponent_missing_pieces_legal = opponent_missing_pieces & self._legal_moves
+        opponent_missing_pieces_illegal = opponent_missing_pieces & ~self._legal_moves
+
+        if active_player_missing_pieces != self._src_square_mask:
+            # the player has canceled the move
+            self._chess_game.go_to_state(self._on_cancel_state)
+        elif popcount(opponent_missing_pieces_legal) == 1 \
+                and not opponent_missing_pieces_illegal and not extra_pieces:
+            # the player has started picked up an enemy piece for capture
+            self._capture_square = lsb(opponent_missing_pieces_legal)
+            boardController.setLeds(const_leds=square_mask(self._capture_square), slow_blink_leds=self._src_square_mask)
+        elif self._capture_square is not None and not wrong_pieces:
+            # the player has made a legal capture
+            move = self._chess_game.find_move(self._src_square, self._capture_square)
+            print("player has made a capture: {}".format(str(move)))
+
+        elif popcount(extra_legal_pieces) == 1 and not extra_illegal_pieces and not opponent_missing_pieces:
+            # the player has made a legal non-capture move
+            dst_square = lsb(extra_legal_pieces)
+            move = self._chess_game.find_move(self._src_square, dst_square)
+            print("player has made move: {}".format(str(move)))
+        else:
+            boardController.setLeds(
+                const_leds=self._legal_moves if self._chess_game.learning_mode else self._src_square_mask,
+                slow_blink_leds=self._src_square_mask if self._chess_game.learning_mode else 0,
+                fast_blink_leds=extra_pieces,
+                fast_blink_leds_2=missing_pieces ^ self._src_square_mask)
 
 
 class ChessGame(State):
@@ -75,18 +166,19 @@ class ChessGame(State):
             engine.configure({"Skill Level": min(engine_skill, 20)})
             self.engine_skill = engine_skill
             self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
-
         self._setup_pgn()
 
-
-
+        self._state = PlayerMoveBaseState(self)
 
     def on_enter_state(self):
-        pass
+        self._state.on_enter_state()
 
     def on_board_changed(self, board: chess.SquareSet):
-        pass
+        self._state.on_board_changed(board)
 
+    def go_to_state(self, state):
+        self._state = state
+        self._game_manager.init_state(state)
 
     def _store_move(self, move):
         self._pgn_node = self._pgn_node.add_variation(move)
@@ -176,6 +268,9 @@ class ChessGame(State):
 
         return result.move
 
+    def find_move(self, src_square, dst_square):
+        return self._board.find_move(src_square, dst_square)
+
     def _do_engine_move(self):
         boardController.setLeds(0)
         engine_move = self._engine_best_move()
@@ -184,10 +279,10 @@ class ChessGame(State):
         src_mask = square_mask(src)
         dst = engine_move.to_square
         dst_mask = square_mask(dst)
-        occpied_before_move = self._occupied()
+        occpied_before_move = self.occupied()
         is_capture = dst in occpied_before_move
         self._board.push(engine_move)
-        occupied_after_move = self._occupied()
+        occupied_after_move = self.occupied()
 
         changed_squares = (occpied_before_move ^ occupied_after_move) | square_mask(dst)
 
@@ -198,16 +293,16 @@ class ChessGame(State):
             physical_board_occupied = boardController.scanBoard()
             if physical_board_occupied != prev_occupied:
                 prev_occupied = physical_board_occupied
-                wrong_pieces = physical_board_occupied ^ self._occupied() - changed_squares
-                extra_pieces = physical_board_occupied - self._occupied() - changed_squares
-                missing_pieces = self._occupied() - physical_board_occupied - changed_squares
+                wrong_pieces = physical_board_occupied ^ self.occupied() - changed_squares
+                extra_pieces = physical_board_occupied - self.occupied() - changed_squares
+                missing_pieces = self.occupied() - physical_board_occupied - changed_squares
 
-                if physical_board_occupied == self._occupied() and (not is_capture or capture_picked_up):
+                if physical_board_occupied == self.occupied() and (not is_capture or capture_picked_up):
                     # the player has successfully made the engine move
                     self._store_move(engine_move)
                     return True
                 elif physical_board_occupied == chess.Board().occupied and \
-                        physical_board_occupied != self._occupied() and \
+                        physical_board_occupied != self.occupied() and \
                         physical_board_occupied != occpied_before_move:
                     # the player has restarted the game
                     self.game_aborted = True
@@ -221,70 +316,34 @@ class ChessGame(State):
                 boardController.setLeds(slow_blink_leds=src_mask, slow_blink_leds_2=dst_mask,
                                         fast_blink_leds=extra_pieces, fast_blink_leds_2=missing_pieces)
 
-    def _legal_moves_from(self, square):
+    def legal_moves_from(self, square):
         for move in self._board.legal_moves:
             if move.from_square == square:
                 yield move
 
-    def _legal_moves_bb_from(self, square):
+    def legal_moves_bb_from(self, square):
         bb = 0
-        for move in self._legal_moves_from(square):
+        for move in self.legal_moves_from(square):
             bb |= 1 << move.to_square
         return bb
 
     # todo: find better name
-    def _occupied(self):
+    def occupied(self):
         return SquareSet(self._board.occupied)
 
-    def _active_player_pieces(self):
+    def active_player_pieces(self):
         return SquareSet(self._board.occupied_co[self._board.turn])
 
-    def _inactive_player_pieces(self):
+    def inactive_player_pieces(self):
         return SquareSet(self._board.occupied_co[not self._board.turn])
 
     # todo: allow a player to resign by illlegally moving their king
-    def _read_player_move(self):
-        prev_occupied = None
-        while True:
-            physical_board_occupied = boardController.scanBoard()
-            if physical_board_occupied != prev_occupied:
-                prev_occupied = physical_board_occupied
-                wrong_pieces = self._occupied() ^ physical_board_occupied
-                extra_pieces = physical_board_occupied - self._occupied()
-                missing_pieces = self._occupied() - physical_board_occupied
-
-                active_player_missing_pieces = missing_pieces & self._active_player_pieces()
-                opponent_missing_pieces = missing_pieces & self._inactive_player_pieces()
-
-                if physical_board_occupied == self._occupied():
-                    # the position on the physical board is exactly the same as the one on the board in memory. no leds needed.
-                    boardController.setLeds(0)
-                elif physical_board_occupied == chess.Board().occupied or self.game_aborted:
-                    # the player has set up the pieces back up to the starting position.
-                    self.game_aborted = True
-                    return
-                elif popcount(wrong_pieces) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
-                    prev_occupied = None
-                    if self.confirm_abort():
-                        return
-                elif popcount(active_player_missing_pieces) == 1:
-                    # the active player has picked up a piece
-                    # we also allow an opponent's piece to be picked up, if the player wants to
-                    # capture by picking up an enemy piece first and only then picking up his own piece
-                    prev_occupied = None  # to ensure that when play_move_from() returns, then
-                    square = Square(lsb(active_player_missing_pieces))
-                    if self._read_player_move_from(square):
-                        return
-                else:
-                    # A piece has been placed or removed from the board without reason.
-                    # Alert the user, by blinking its led
-                    boardController.setLeds(fast_blink_leds=missing_pieces, fast_blink_leds_2=extra_pieces)
 
     # returns true and updates the board if the move was completed, returns false if the move was aborted
     def _read_player_move_from(self, src_square):
         prev_occupied = None
         src_square_mask = square_mask(src_square)
-        legal_moves = self._legal_moves_bb_from(src_square)
+        legal_moves = self.legal_moves_bb_from(src_square)
         capture_square = None
         boardController.resetBlinkTimer()
         while True:
@@ -292,19 +351,19 @@ class ChessGame(State):
             if physical_board_occupied != prev_occupied:
                 prev_occupied = physical_board_occupied
 
-                wrong_pieces = self._occupied() ^ physical_board_occupied ^ src_square_mask
+                wrong_pieces = self.occupied() ^ physical_board_occupied ^ src_square_mask
 
-                extra_pieces = physical_board_occupied - self._occupied()
+                extra_pieces = physical_board_occupied - self.occupied()
                 extra_legal_pieces = extra_pieces & legal_moves
                 extra_illegal_pieces = extra_pieces & ~legal_moves
 
-                missing_pieces = self._occupied() - physical_board_occupied
-                active_player_missing_pieces = missing_pieces & self._active_player_pieces()
+                missing_pieces = self.occupied() - physical_board_occupied
+                active_player_missing_pieces = missing_pieces & self.active_player_pieces()
 
-                opponent_missing_pieces = missing_pieces & self._inactive_player_pieces()
+                opponent_missing_pieces = missing_pieces & self.inactive_player_pieces()
                 opponent_missing_pieces_legal = opponent_missing_pieces & legal_moves
                 opponent_missing_pieces_illegal = opponent_missing_pieces & ~legal_moves
-                if physical_board_occupied == chess.Board().occupied and physical_board_occupied != self._occupied():
+                if physical_board_occupied == chess.Board().occupied and physical_board_occupied != self.occupied():
                     # the player has restarted the game
                     self.game_aborted = True
                     return False
@@ -346,9 +405,9 @@ class ChessGame(State):
         src_mask = square_mask(move.from_square)
         dst_mask = square_mask(move.to_square)
 
-        occupied_before_move = self._occupied()
+        occupied_before_move = self.occupied()
         self._board.push(move)
-        occupied_after_move = self._occupied()
+        occupied_after_move = self.occupied()
 
         changed_squares = occupied_before_move ^ occupied_after_move
         changed_squares_indirect = changed_squares - (src_mask | dst_mask)
@@ -368,9 +427,9 @@ class ChessGame(State):
             if physical_board_occupied != prev_occupied:
                 prev_occupied = physical_board_occupied
                 print("wrong pieces: ")
-                wrong_pieces = self._occupied() ^ physical_board_occupied
-                missing_pieces = self._occupied() - physical_board_occupied
-                extra_pieces = physical_board_occupied - self._occupied()
+                wrong_pieces = self.occupied() ^ physical_board_occupied
+                missing_pieces = self.occupied() - physical_board_occupied
+                extra_pieces = physical_board_occupied - self.occupied()
 
                 print(wrong_pieces)
                 if not wrong_pieces:
@@ -393,7 +452,7 @@ class ChessGame(State):
         start_time = time.time()
         while time.time() - start_time < self.confirm_move_delay:
             physical_board_occupied = boardController.scanBoard()
-            if physical_board_occupied != self._occupied():
+            if physical_board_occupied != self.occupied():
                 return False
         print("player move: ", str(move))
         self._store_move(move)
@@ -408,7 +467,7 @@ class ChessGame(State):
             physical_board_occupied = boardController.scanBoard()
             if physical_board_occupied != prev_occupied:
                 prev_occupied = physical_board_occupied
-                wrong_pieces = self._occupied() ^ physical_board_occupied
+                wrong_pieces = self.occupied() ^ physical_board_occupied
                 if popcount(wrong_pieces) <= ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT:
                     print("abort canceled")
                     return False
