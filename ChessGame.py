@@ -24,6 +24,7 @@ def square_mask(square):
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
+# todo: rework threading to allow moves to be given by bluetooth
 
 def wait_for_piece_setup():
     prev_occupied = None

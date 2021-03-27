@@ -2,11 +2,13 @@ import json
 import os
 import re
 
-SETTINGS_PATH = "settings/settings.json"
+ROOT_PATH = "/home/pi/chessboard-game-3/"
 
-PGN_PATH = "pgn"
+SETTINGS_PATH = ROOT_PATH + "settings/settings.json"
 
-PGN_ARCHIVE_PATH = "pgn_archive"
+PGN_PATH = ROOT_PATH + "pgn"
+
+PGN_ARCHIVE_PATH = ROOT_PATH + "pgn_archive"
 
 def read_settings():
     with open(SETTINGS_PATH) as json_settings:
