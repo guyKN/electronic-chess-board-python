@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 import datetime
 import random
 import time
@@ -6,9 +9,11 @@ import boardController
 import chess
 import chess.engine
 import chess.pgn
-from chess import Square, SquareSet, polyglot
-from BluetoothManager import BluetoothManager
-import FileManager
+from chess import Square, SquareSet
+
+import GameManager
+from State import State
+
 
 def lsb(square_set):
     return Square(chess.lsb(int(square_set)))
@@ -21,121 +26,30 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
-
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
-# todo: rework threading to allow moves to be given by bluetooth
+class WaitingForSetupState(State):
+    def __init__(self, game_manager: GameManager.GameManager):
+        self._game_manager = game_manager
 
-def wait_for_piece_setup():
-    prev_occupied = None
-    while True:
-        physical_board_occupied = boardController.scanBoard()
-        if physical_board_occupied != prev_occupied:
-            prev_occupied = physical_board_occupied
-            missing_pieces = STARTING_SQUARES & ~physical_board_occupied
-            extra_pieces = ~STARTING_SQUARES & physical_board_occupied
-            num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
-            # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
-            if num_wrong_pieces >= 16:
-                boardController.setLeds(0)
-            else:
-                boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
-            if missing_pieces == 0 and extra_pieces == 0:
-                break
+    def on_enter_state(self):
+        boardController.setLeds(0, reset_blink_timer=True)
 
-
-def open_engine(path="/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"):
-    engine = chess.engine.SimpleEngine.popen_uci(path)
-    engine.configure({"Hash": 16, "Use NNUE": False})
-    return engine
+    def on_board_changed(self, board: chess.SquareSet):
+        missing_pieces = STARTING_SQUARES & ~board
+        extra_pieces = ~STARTING_SQUARES & board
+        num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
+        # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
+        if num_wrong_pieces >= 31:
+            boardController.setLeds(0)
+        elif num_wrong_pieces == 0:
+            self._game_manager.go_to_state(self._game_manager.create_game())
+        else:
+            boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
 
 
-def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin"):
-    return chess.polyglot.open_reader(path)
 
-
-legal_setting_keys = {"enable_engine", "engine_skill", "engine_color", "learning_mode"}
-
-
-class GameManager:
-    def __init__(self):
-        self.game = None
-        self._settings = FileManager.read_settings()
-        self._engine = open_engine()
-        self._opening_book = open_opening_book()
-        self.bluetooth_manager = BluetoothManager(self)
-
-    def get_settings(self):
-        return self._settings
-
-    def update_settings(self, new_settings):
-        if not legal_setting_keys.issuperset(new_settings.keys()):
-            print("Illegal Key Given")
-            # illegal key given
-            return False
-        if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and \
-                new_settings["engine_color"] != "black":
-            # engine color must be white or black
-            print("engine color must be white or black")
-            return False
-
-        if "engine_skill" in new_settings.keys():
-            try:
-                engine_skill = int(new_settings["engine_skill"])
-            except ValueError:
-                print("Engine skill must be a number")
-                return False
-            if engine_skill < 1:
-                print("Engine skill must be positive")
-                return False
-
-        for key, value in new_settings.items():
-            self._settings[key] = value
-
-        FileManager.write_settings(self._settings)
-        if self.game is not None:
-            self.game.learning_mode = self._settings["learning_mode"]
-
-        return True
-
-    def game_active(self):
-        return self.game is not None
-
-    def cleanup(self):
-        self._engine.close()
-        self._opening_book.close()
-        FileManager.write_settings(self._settings)
-
-    def _create_game(self):
-        return ChessGame(
-            learning_mode=self._settings["learning_mode"],
-            white_is_engine=self._settings["enable_engine"] and self._settings["engine_color"] == "white",
-            black_is_engine=self._settings["enable_engine"] and self._settings["engine_color"] == "black",
-            engine_skill=int(self._settings["engine_skill"]),
-            engine=self._engine if self._settings["enable_engine"] else None,
-            opening_book=self._opening_book,
-            game_manger=self,
-            pgn_round=self._settings["round"]
-        )
-
-    def game_loop(self):
-        while True:
-            wait_for_piece_setup()
-            self.game = self._create_game()
-            print("game created")
-            self.game.play()
-            self.game = None
-            self._settings["round"] += 1
-            FileManager.write_settings(self._settings)
-
-    def on_game_move(self, move):
-        pgn = self.game.get_pgn_string()
-        self.bluetooth_manager.write_pgn(pgn)
-    def on_game_end(self):
-        FileManager.write_pgn(self.game.get_pgn())
-        self.bluetooth_manager.write_pgn_file_count()
-
-class ChessGame:
+class ChessGame(State):
     MAX_WRONG_PIECES_UNTIL_ABORT = 8
     WRONG_PIECES_ABORT_DELAY = 2.5
 
@@ -152,6 +66,7 @@ class ChessGame:
         self._pgn_node = self._pgn_game
         self._game_manager = game_manger
         self._pgn_round = pgn_round
+        self.game_aborted = False
 
         if engine is None and (white_is_engine or black_is_engine):
             raise ValueError("An engine must be passed as an argument if any player is an engine.")
@@ -161,9 +76,17 @@ class ChessGame:
             self.engine_skill = engine_skill
             self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
 
-        self.game_aborted = False
-
         self._setup_pgn()
+
+
+
+
+    def on_enter_state(self):
+        pass
+
+    def on_board_changed(self, board: chess.SquareSet):
+        pass
+
 
     def _store_move(self, move):
         self._pgn_node = self._pgn_node.add_variation(move)
@@ -180,6 +103,7 @@ class ChessGame:
 
     def get_pgn_string(self):
         return str(self._pgn_game)
+
     def get_pgn(self):
         return self._pgn_game
 

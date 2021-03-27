@@ -1,9 +1,7 @@
 import time
 
 import boardController
-import asyncio
-from ChessGame import ChessGame, GameManager
-from BluetoothManager import BluetoothManager
+from GameManager import GameManager
 
 def read_loop():
     prev_board = None
