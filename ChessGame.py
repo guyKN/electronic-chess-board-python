@@ -306,6 +306,20 @@ class GameEndIndicatorState(State):
     def on_board_changed(self, board: chess.SquareSet):
         pass
 
+class IdleState(State):
+    def __init__(self, chess_game: ChessGame):
+        self.chess_game = chess_game
+
+
+    def on_enter_state(self):
+        pass
+
+    def on_board_changed(self, board: chess.SquareSet):
+        missing_pieces = self.chess_game.occupied() - board
+        extra_pieces = board - self.chess_game.occupied()
+        boardController.setLeds(fast_blink_leds=extra_pieces, fast_blink_leds_2=missing_pieces)
+
+
 class AbortLaterState(State):
 
     def __init__(self, chess_game: ChessGame, on_cancel_state: State):
@@ -394,10 +408,14 @@ class ChessGame(State):
 
     def start_new_move(self):
         if not self.check_game_end():
-            if self.player_types[self._board.turn]:
+            if self.player_types[self._board.turn] is PlayerType.ENGINE:
                 self.go_to_state(CalculateEngineMoveState(self))
-            else:
+            elif self.player_types[self._board.turn] is PlayerType.HUMAN:
                 self.go_to_state(PlayerMoveBaseState(self))
+            elif self.player_types[self._board.turn] is PlayerType.BLUETOOTH:
+                self.go_to_state(IdleState(self))
+
+
 
 
     def check_game_end(self):
