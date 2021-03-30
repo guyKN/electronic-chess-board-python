@@ -1,6 +1,9 @@
 import time
 
+import asyncio
 import boardController
+import chess.engine
+
 from StateManager import StateManager
 
 def read_loop():
@@ -31,14 +34,15 @@ def animation():
     while True:
         pass
 
-game_manager = None
+state_manager = None
 try:
+    print("newest version!")
     boardController.init()
-    game_manager = StateManager()
-    game_manager.game_loop()
+    state_manager = StateManager()
+    state_manager.game_loop()
 
 finally:
     print("cleanup")
     boardController.cleanup()
-    if game_manager is not None:
-        game_manager.cleanup()
+    if state_manager is not None:
+        state_manager.cleanup()
