@@ -299,7 +299,7 @@ class GameEndIndicatorState(State):
         boardController.setLeds(fast_blink_leds=self.leds_to_blink)
         if self._delay_handler is None:
             self._delay_handler =  \
-                asyncio.get_running_loop().call_later(ChessGame.GAME_END_DELAY, self.chess_game.finish_game)
+                asyncio.get_running_loop().call_later(ChessGame.GAME_END_DELAY, self.chess_game.finish_and_restart_game)
 
     def on_leave_state(self):
         self._delay_handler.cancel()
@@ -330,7 +330,7 @@ class AbortLaterState(State):
     def on_enter_state(self):
         if self._delay_handler is None:
             self._delay_handler = asyncio.get_running_loop().call_later(ChessGame.WRONG_PIECES_ABORT_DELAY,
-                                                                        self.chess_game.finish_game)
+                                                                        self.chess_game.finish_and_restart_game)
 
     def on_board_changed(self, board: chess.SquareSet):
         if not self.chess_game.should_abort(board):
@@ -382,7 +382,7 @@ class ChessGame(State):
     def on_board_changed(self, board: chess.SquareSet):
         if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES:
             # the player has set the pieces back to their original positions, so the game is restarted immediately
-            self.finish_game()
+            self.finish_and_restart_game()
         elif self.should_abort(board) and not self.is_aborting():
             # Too many pieces are wrong, wait a short delay and then abort the game
             abort_later_state = AbortLaterState(self, self.state)
@@ -441,6 +441,10 @@ class ChessGame(State):
 
     def should_abort(self, board):
         return popcount(board ^ self.occupied()) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT
+
+    def finish_and_restart_game(self):
+        self.finish_game()
+        self.state_manager.wait_for_piece_setup()
 
     def finish_game(self):
         self.state_manager.on_game_end()
@@ -510,7 +514,7 @@ class ChessGame(State):
     def inactive_player_pieces(self):
         return SquareSet(self._board.occupied_co[not self._board.turn])
 
-
+    # todo: open the engine earlier because it makes the first move laggy
     async def load_engine(self):
         if self.state_manager.engine is None:
             transport, self.state_manager.engine = await chess.engine.popen_uci("/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish")

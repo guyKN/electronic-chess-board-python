@@ -99,7 +99,7 @@ class StateManager:
 
         if not setting_keys_requiring_game_restart.isdisjoint(new_settings.keys()):
             # the player has changed a setting that requires the game to be restarted
-            self.game.finish_game()
+            self.game.finish_and_restart_game()
 
         self.game.learning_mode = self._settings["learning_mode"]
         self.state.on_board_changed(self.board) # refresh the board so that the leds changed to the new settings.
@@ -147,15 +147,16 @@ class StateManager:
     def on_game_move(self, move):
         self.bluetooth_manager.write_pgn()
 
-    # todo: don't require starting a new game when on_game_end() is called
+    def wait_for_piece_setup(self):
+        self.game = self.create_game()
+        self.go_to_state(WaitingForSetupState(self))
+
     def on_game_end(self):
         if self.game.should_save_game():
             FileManager.write_pgn(self.game.get_pgn())
             self.bluetooth_manager.write_pgn_file_count()
             self._settings["round"] += 1
             FileManager.write_settings(self._settings)
-        self.game = self.create_game()
-        self.go_to_state(WaitingForSetupState(self))
 
     async def close_engine(self):
         await self.engine.quit()
