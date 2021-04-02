@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
+import sys
 from enum import Enum
 from typing import Callable, Any, Iterable, List
 
@@ -10,6 +11,7 @@ import boardController
 import chess
 import chess.engine
 import chess.pgn
+import os
 from chess import Square, SquareSet
 
 import StateManager
@@ -56,25 +58,79 @@ def parse_move_list_string(moves:str) -> List[chess.Move]:
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
-
 class WaitingForSetupState(State):
-    def __init__(self, game_manager: StateManager.StateManager):
-        self._game_manager = game_manager
+    def __init__(self, state_manager: StateManager.StateManager):
+        self.state_manager = state_manager
+
+        self.max_num_pieces = 0 # the maximum number of pieces that have been on the board,
+        # used to determine how long to wait before powering off when there are no pieces left on the board
 
     def on_enter_state(self):
-        boardController.setLeds(0, reset_blink_timer=True)
+        pass
 
     def on_board_changed(self, board: chess.SquareSet):
         missing_pieces = STARTING_SQUARES & ~board
         extra_pieces = ~STARTING_SQUARES & board
         num_wrong_pieces = popcount(missing_pieces) + popcount(extra_pieces)
-        # if too many pieces are missing, don't blink any leds, because the play probably isn't setting up the board
-        if num_wrong_pieces >= 31:
-            boardController.setLeds(0)
+        num_pieces = popcount(board)
+
+        if num_pieces > self.max_num_pieces:
+            self.max_num_pieces = num_pieces
+
+        if board == 0:
+            self.state_manager.go_to_state(WaitingToPowerOffState(self, self.state_manager, self.should_have_long_power_off_delay()))
         elif num_wrong_pieces == 0:
-            self._game_manager.start_game()
+            self.state_manager.start_game()
         else:
             boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
+
+    def should_have_long_power_off_delay(self):
+        return self.max_num_pieces <= 4
+
+class WaitingToPowerOffState(State):
+    POWER_OFF_DELAY_SHORT = 10
+    POWER_OFF_DELAY_LONG = 30
+    state_manager: StateManager
+    def __init__(self, on_cancel_state: State, state_manager: StateManager, is_long_delay):
+        self.state_manager = state_manager
+        self.on_cancel_state = on_cancel_state
+        self.power_off_delay = WaitingToPowerOffState.POWER_OFF_DELAY_LONG if is_long_delay else WaitingToPowerOffState.POWER_OFF_DELAY_LONG
+        self.shutdown_delay_handle = None
+        self.cancel_delay_handle = None
+
+    def on_enter_state(self):
+        if self.shutdown_delay_handle is None:
+            self.shutdown_delay_handle = asyncio.get_running_loop().call_later(self.power_off_delay, self.shutdown_system)
+
+    def on_leave_state(self):
+        if self.shutdown_delay_handle is not None:
+            self.shutdown_delay_handle.cancel()
+            self.shutdown_delay_handle = None
+
+    def on_board_changed(self, board: chess.SquareSet):
+
+        extra_pieces = board - STARTING_SQUARES
+        missing_pieces = STARTING_SQUARES - board
+
+        boardController.setLeds(slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
+
+        if board != 0:
+            # there are pieces on the board, the player has undone the shutdown
+            if self.cancel_delay_handle is None:
+                self.cancel_delay_handle = asyncio.get_running_loop().call_later(0.5,
+                                                                                 lambda: self.state_manager.go_to_state(self.on_cancel_state))
+        else:
+            if self.cancel_delay_handle is not None:
+                self.cancel_delay_handle.cancel()
+                self.cancel_delay_handle = None
+
+    def shutdown_system(self):
+        print("Shuting down..")
+        if self.state_manager.is_test:
+            asyncio.get_running_loop().stop()
+        else:
+            boardController.cleanup()
+            os.system("sudo shutdown -h now")
 
 
 class PlayerMoveBaseState(State):
@@ -433,6 +489,7 @@ class ChessGame(State):
 
     def on_board_changed(self, board: chess.SquareSet):
         if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES:
+            # todo: allow players to move to the starting position with a legal move
             # the player has set the pieces back to their original positions, so the game is restarted immediately
             self.finish_and_restart_game()
         elif self.should_abort(board) and not self.is_aborting():
@@ -447,7 +504,6 @@ class ChessGame(State):
         self.state.on_leave_state()
 
     def go_to_state(self, state):
-        # print("going to state: " + str(state))
         if self.state is not None:
             self.state.on_leave_state()
         self.state = state
@@ -511,7 +567,7 @@ class ChessGame(State):
         return isinstance(self.state, AbortLaterState)
 
     def should_abort(self, board):
-        return popcount(board ^ self.occupied()) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT
+        return board == 0 or popcount(board ^ self.occupied()) > ChessGame.MAX_WRONG_PIECES_UNTIL_ABORT
 
     def finish_and_restart_game(self):
         self.finish_game()

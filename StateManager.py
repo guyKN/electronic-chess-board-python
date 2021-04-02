@@ -31,7 +31,9 @@ def exception_handler(loop, context):
     loop.stop()
 
 class StateManager:
-    def __init__(self):
+    def __init__(self, is_test = False):
+        self.is_test = is_test
+        self.board = boardController.scanBoard()
         self.engine = None
         self.event_loop = asyncio.get_event_loop()
         asyncio.set_event_loop_policy(chess.engine.EventLoopPolicy())
@@ -42,12 +44,12 @@ class StateManager:
         self.scan_thread = ScanThread(
             callback=lambda board:
                 self.event_loop.call_soon_threadsafe(self.on_board_change, board))
-        self.board = boardController.scanBoard()
         self._settings = FileManager.read_settings()
         self._opening_book = open_opening_book()
         self.bluetooth_manager = BluetoothManager(self)
         self.game = self.create_game()
-        self.state = WaitingForSetupState(self)
+        self.waiting_for_piece_setup_state = WaitingForSetupState(self)
+        self.state = self.waiting_for_piece_setup_state
         self.state.on_enter_state()
 
 
@@ -56,6 +58,7 @@ class StateManager:
         self.event_loop.run_forever()
 
     def go_to_state(self, state: State):
+        print(str(state))
         self.state.on_leave_state()
         self.state = state
         self.init_state(self.state)
@@ -114,7 +117,7 @@ class StateManager:
             return
         self.game.finish_game()
         self.game = self.create_game(bluetooth_player_color, game_id)
-        self.go_to_state(WaitingForSetupState(self))
+        self.go_to_state(self.waiting_for_piece_setup_state)
 
     # todo: implement
     def force_game_moves(self, moves: str):
@@ -153,7 +156,7 @@ class StateManager:
 
     def wait_for_piece_setup(self):
         self.game = self.create_game()
-        self.go_to_state(WaitingForSetupState(self))
+        self.go_to_state(self.waiting_for_piece_setup_state)
 
     def on_game_end(self):
         if self.game.should_save_game():

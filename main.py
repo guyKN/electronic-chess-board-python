@@ -1,3 +1,4 @@
+import sys
 import time
 
 import asyncio
@@ -34,13 +35,16 @@ def animation():
     while True:
         pass
 
+def is_test():
+    return "--run-test" in sys.argv
+
 state_manager = None
 try:
     print("newest version!")
     boardController.init()
-    state_manager = StateManager()
-    state_manager.game_loop()
 
+    state_manager = StateManager(is_test=is_test())
+    state_manager.game_loop()
 finally:
     print("cleanup")
     boardController.cleanup()
