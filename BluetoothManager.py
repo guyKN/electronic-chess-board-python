@@ -17,6 +17,14 @@ def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
         raise RuntimeError(error_message)
 
+def parse_color(color: str) -> chess.Color:
+    if color == "white":
+        return chess.WHITE
+    elif color == "black":
+        return chess.BLACK
+    else:
+        raise ValueError("color must be black or white")
+
 
 class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
@@ -30,8 +38,8 @@ class BluetoothManager:
         REQUEST_READ_PGN_FILE = 5
         REQUEST_ARCHIVE_PGN_FILE = 6
         REQUEST_PGN_FILE_COUNT = 7
-        START_ONLINE_GAME = 8
-        ONLINE_GAME_WRITE_PGN = 9
+        START_BLUETOOTH_GAME = 8
+        BLUETOOTH_GAME_WRITE_MOVES = 9
 
     class ServerToClientActions:
         RET_READ_FEN = 0
@@ -137,21 +145,18 @@ class BluetoothManager:
             self.archive_pgn_file(data)
         elif action == BluetoothManager.ClientToServerActions.REQUEST_PGN_FILE_COUNT:
             self.write_pgn_file_count()
-        elif action == BluetoothManager.ClientToServerActions.START_ONLINE_GAME:
-            if data == "white":
-                bluetooth_player = chess.WHITE
-            elif data == "black":
-                bluetooth_player = chess.BLACK
-            else:
-                self.write_message(BluetoothManager.ServerToClientActions.ON_ERROR, "bluetooth_player must be black or white")
-                return
-
-            self.call_on_main_thread(self.state_manager.request_bluetooth_game, bluetooth_player)
-        elif action == BluetoothManager.ClientToServerActions.ONLINE_GAME_WRITE_PGN:
-            self.call_on_main_thread(self.state_manager.force_game_pgn, data)
-
+        elif action == BluetoothManager.ClientToServerActions.START_BLUETOOTH_GAME:
+            try:
+                data_json = json.loads(data)
+                bluetooth_player = not parse_color(data_json["clientColor"])
+                game_id = str(data_json["gameId"])
+                self.call_on_main_thread(self.state_manager.request_bluetooth_game, bluetooth_player, game_id)
+            except ValueError as e:
+                print("Error Starting bluetooth game: " + str(e))
+        elif action == BluetoothManager.ClientToServerActions.BLUETOOTH_GAME_WRITE_MOVES:
+            self.call_on_main_thread(self.state_manager.force_game_moves, data)
         else:
-            print("invalid message action")
+            print("invalid message action: " + action)
 
     def write_pgn_file_count(self):
         num_files = len(FileManager.saved_games())
@@ -233,6 +238,9 @@ class BluetoothManager:
     def return_settings(self):
         settings = json.dumps(self.state_manager.get_settings())
         self.write_message(BluetoothManager.ServerToClientActions.RET_READ_PREFERENCES, settings)
+
+    def write_bluetooth_game_move(self, move: chess.Move):
+        self.write_message(BluetoothManager.ServerToClientActions.ON_MOVE, move.uci())
 
     # must be called from the thread 'write-tread'
     def _write(self, action, data):

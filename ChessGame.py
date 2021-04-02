@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import random
-import time
 from enum import Enum
-from typing import Union, Callable, Any
+from typing import Callable, Any, Iterable, List
 
-import asyncio
 import boardController
 import chess
 import chess.engine
@@ -28,6 +27,32 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
+"""
+Given two lists, returns the lowest index at which the lists have different values. 
+If the lists are identical, returns their length.
+"""
+def index_of_difference(list1, list2):
+    i = 0
+    try:
+        while list1[i] == list2[i]:
+            i+=1
+    except IndexError:
+        # Ignore index out of bounds errors, since that means we got the end of the list and just return.
+        pass
+    return i
+
+def is_legal_move_list(move_list):
+    board = chess.Board()
+    for move in move_list:
+        if not board.is_legal(move) or move == chess.Move.null():
+            return False
+        board.push(move)
+    return True
+
+def parse_move_list_string(moves:str) -> List[chess.Move]:
+    if moves == "":
+        return []
+    return list(map(chess.Move.from_uci ,moves.split(" ")))
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
@@ -207,7 +232,8 @@ class ConfirmMoveState(State):
             self._delay_handle.cancel()
             self._delay_handle = None
     def _do_move(self):
-        self.chess_game.do_move(self.move)
+        self.chess_game.do_move(self.move, is_move_for_bluetooth_game=self.chess_game.is_bluetooth_game)
+        self.chess_game.start_new_move()
 
 
 
@@ -228,12 +254,13 @@ class CalculateEngineMoveState(State):
 
     def on_best_move_found(self, move: chess.Move):
         if self._is_active:
-            do_engine_move_state = ForceMoveState(move, self.chess_game)
+            do_engine_move_state = ForceMoveState(move, self.chess_game, self.chess_game.start_new_move)
             self.chess_game.go_to_state(do_engine_move_state)
 
 
 class ForceMoveState(State):
-    def __init__(self, engine_move: chess.Move, chess_game: ChessGame):
+    def __init__(self, engine_move: chess.Move, chess_game: ChessGame, on_complete_callback: Callable[[], Any]):
+        self.on_complete_callback = on_complete_callback
         self.chess_game = chess_game
         self.move = engine_move
 
@@ -278,6 +305,7 @@ class ForceMoveState(State):
         if physical_board_occupied == self.occupied_after_move and ((not self.is_capture) or self.capture_picked_up):
             # The player has made the move
             self.chess_game.do_move(self.move)
+            self.on_complete_callback()
         elif wrong_pieces_direct or (self.is_capture and (not self.capture_picked_up)):
             # The player has not yet moved the piece from its source to its destination
             boardController.setLeds(slow_blink_leds=self.src_mask, slow_blink_leds_2=self.dst_mask,
@@ -286,6 +314,26 @@ class ForceMoveState(State):
             # the player has made the base move, but hasn't moved any of the indirectly changed squares (castling, en passant)
             boardController.setLeds(slow_blink_leds=self.pieces_to_remove_indirect, slow_blink_leds_2=self.pieces_to_add_indirect,
                                     fast_blink_leds=extra_pieces_illegal, fast_blink_leds_2=missing_pieces_illegal)
+
+class ForceMultipleMovesState(State):
+    def __init__(self, chess_game: ChessGame, moves:Iterable[chess.Move]):
+        self.move_iterator = iter(moves)
+
+        self.chess_game = chess_game
+
+    def on_enter_state(self):
+        try:
+            move = next(self.move_iterator)
+            force_move_state = ForceMoveState(move, self.chess_game, lambda: self.chess_game.go_to_state(self))
+            self.chess_game.go_to_state(force_move_state)
+        except StopIteration:
+            # done going through all the moves
+            self.chess_game.start_new_move()
+
+
+    def on_board_changed(self, board: chess.SquareSet):
+        pass
+
 
 class GameEndIndicatorState(State):
     def __init__(self, leds_to_blink: chess.SquareSet, chess_game: ChessGame):
@@ -357,27 +405,31 @@ class ChessGame(State):
     WRONG_PIECES_ABORT_DELAY = 2.5
     GAME_END_DELAY = 4
 
-    def __init__(self, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.3, learning_mode=True,
+    def __init__(self, state_manager:StateManager, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.3, learning_mode=True,
                  white_player_type=PlayerType.HUMAN, black_player_type=PlayerType.HUMAN,
-                 engine_skill=20, opening_book=None, state_manager:StateManager, pgn_round=1):
+                 engine_skill=20, opening_book=None, pgn_round=1, engine= None, game_id= None):
         self.learning_mode = learning_mode
         self._board = chess.Board(start_fen)
         self.player_types = [black_player_type, white_player_type]
+        self.is_bluetooth_game = white_player_type == PlayerType.BLUETOOTH or black_player_type == PlayerType.BLUETOOTH
         self.confirm_move_delay = confirm_move_delay
         self._opening_book = opening_book
         self._pgn_game = chess.pgn.Game()
         self._pgn_node = self._pgn_game
         self.state_manager = state_manager
         self._pgn_round = pgn_round
+        self.is_active = False
+        self.engine = engine
+        self.game_id = game_id
 
         self.engine_skill = engine_skill
         self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
         self._setup_pgn()
-
-        self.state = None
+        self.state = self.state_for_next_move()
 
     def on_enter_state(self):
-        self.start_new_move()
+        self.is_active = True
+        self.state.on_enter_state()
 
     def on_board_changed(self, board: chess.SquareSet):
         if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES:
@@ -391,50 +443,69 @@ class ChessGame(State):
             self.state.on_board_changed(board)
 
     def on_leave_state(self):
+        self.is_active = True
         self.state.on_leave_state()
 
     def go_to_state(self, state):
+        # print("going to state: " + str(state))
         if self.state is not None:
             self.state.on_leave_state()
         self.state = state
-        self.state_manager.init_state(self.state)
+        if self.is_active:
+            self.state_manager.init_state(self.state)
 
-    def do_move(self, move: chess.Move):
+    # todo: handle ValueErrors when calling this method
+    def force_moves(self, moves_string: str):
+        if not self.is_bluetooth_game:
+            raise ValueError("Moves may only be forced from an external source when playing a bluetooth game.")
+
+        new_moves = parse_move_list_string(moves_string)
+
+        if not is_legal_move_list(new_moves):
+            raise ValueError("Illegal moves provided")
+        old_moves = self._board.move_stack
+
+        print("old moves:\n" + str(old_moves))
+        print("new moves:\n" + str(new_moves))
+        if new_moves == old_moves:
+            # no change was made to the moves, no action needed
+            return
+
+        move_number_of_difference = index_of_difference(new_moves, old_moves)
+        print("move number of difference: {}".format(move_number_of_difference))
+        new_moves = new_moves[move_number_of_difference:]
+        self._pop_board_to_move_number(move_number_of_difference)
+
+        force_multiple_moves_state = ForceMultipleMovesState(self, new_moves)
+        self.go_to_state(force_multiple_moves_state)
+
+
+    def do_move(self, move: chess.Move, is_move_for_bluetooth_game = False):
         self._board.push(move)
         self._pgn_node = self._pgn_node.add_variation(move)
         if self.state_manager is not None:
-            self.state_manager.on_game_move(move)
-        self.start_new_move()
+            self.state_manager.on_game_move(move, is_move_for_bluetooth_game=is_move_for_bluetooth_game)
 
     def start_new_move(self):
-        if not self.check_game_end():
-            if self.player_types[self._board.turn] is PlayerType.ENGINE:
-                self.go_to_state(CalculateEngineMoveState(self))
-            elif self.player_types[self._board.turn] is PlayerType.HUMAN:
-                self.go_to_state(PlayerMoveBaseState(self))
-            elif self.player_types[self._board.turn] is PlayerType.BLUETOOTH:
-                self.go_to_state(IdleState(self))
+        self.go_to_state(self.state_for_next_move())
 
-
-
-
-    def check_game_end(self):
+    def state_for_next_move(self):
         if self._board.is_checkmate():
-            self._pgn_game.headers["Result"] = self._board.result(claim_draw=True)
+            self._pgn_game.headers["Result"] = self._board.result()
             loser_king = self._board.pieces(chess.KING, self._board.turn)
             game_end_indicator = GameEndIndicatorState(loser_king, self)
-            self.go_to_state(game_end_indicator)
-            return True
-
+            return game_end_indicator
         elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw():
             self._pgn_game.headers["Result"] = self._board.result(claim_draw=True)
             kings = self._board.kings
             game_end_indicator = GameEndIndicatorState(kings, self)
-            self.go_to_state(game_end_indicator)
-            return True
-
-        else:
-            return False
+            return game_end_indicator
+        elif self.player_types[self._board.turn] is PlayerType.ENGINE:
+             return CalculateEngineMoveState(self)
+        elif self.player_types[self._board.turn] is PlayerType.HUMAN:
+            return PlayerMoveBaseState(self)
+        elif self.player_types[self._board.turn] is PlayerType.BLUETOOTH:
+            return IdleState(self)
 
     def is_aborting(self):
         return isinstance(self.state, AbortLaterState)
@@ -449,13 +520,18 @@ class ChessGame(State):
     def finish_game(self):
         self.state_manager.on_game_end()
 
-    def _pop_pgn(self):
+    def _pop_board(self):
+        self._board.pop()
+
         parent = self._pgn_node.parent
         if parent is None:
-            raise ValueError("tried to pop pgn while at the root node")
-
+            raise IndexError("tried to pop pgn while at the root node")
         parent.remove_variation(self._pgn_node)
         self._pgn_node = parent
+
+    def _pop_board_to_move_number(self, index):
+        while len(self._board.move_stack) > index:
+            self._pop_board()
 
     def get_pgn_string(self):
         return str(self._pgn_game)
@@ -464,8 +540,10 @@ class ChessGame(State):
         return self._pgn_game
 
     def _player_name(self, player):
-        if self.player_types[player]:
+        if self.player_types[player] == PlayerType.ENGINE:
             return "Stockfish Level " + str(self.engine_skill)
+        elif self.player_types[player] == PlayerType.BLUETOOTH:
+            return "Online Opponent"
         else:
             return "Human"
 
@@ -481,7 +559,7 @@ class ChessGame(State):
     Is used to filter out short incomplete unnecessary games from clogging the storage. 
     """
     def should_save_game(self):
-        return self._board.is_game_over(claim_draw=True) or self._board.ply() >= 8
+        return not self.is_bluetooth_game and (self._board.is_game_over(claim_draw=True) or self._board.ply() >= 8)
     def get_fen(self):
         return self._board.fen()
 
@@ -514,13 +592,6 @@ class ChessGame(State):
     def inactive_player_pieces(self):
         return SquareSet(self._board.occupied_co[not self._board.turn])
 
-    # todo: open the engine earlier because it makes the first move laggy
-    async def load_engine(self):
-        if self.state_manager.engine is None:
-            transport, self.state_manager.engine = await chess.engine.popen_uci("/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish")
-        await self.state_manager.engine.configure({"Skill Level": min(self.engine_skill, 20)})
-        return self.state_manager.engine
-
     async def engine_best_move(self, callback: Callable[[chess.Move], Any]):
         # randomly decide whether to use opening book or not
         if (self._opening_book is not None) and (random.uniform(1, 20) <= self.engine_skill):
@@ -532,15 +603,16 @@ class ChessGame(State):
             except IndexError:
                 # there is no stored entry in the opening book. Use the engine normally
                 pass
-        engine = await self.load_engine()
-        result = await engine.play(self._board, chess.engine.Limit(time=self.engine_time),
+        # todo: ensure the engine is actually changing difficulty
+        await self.engine.configure({"Skill Level": min(self.engine_skill, 20)}) # todo: configure engine only once
+
+        result = await self.engine.play(self._board, chess.engine.Limit(time=self.engine_time),
                                    info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE))
         print("\nengine move: ", result.move, ".\ntime: ", result.info["time"], "\nnps: ", result.info["nps"],
               "\nscore: ", result.info["score"], "\ndepth: ", result.info["depth"], "\nseldepth",
               result.info["seldepth"])
 
         callback(result.move)
-
 
     # todo: allow a player to resign by illlegally moving their king
     # todo: allow takebacks

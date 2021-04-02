@@ -22,6 +22,7 @@ legal_setting_keys = {"enable_engine", "engine_skill", "engine_color", "learning
 setting_keys_requiring_game_restart = {"enable_engine", "engine_skill", "engine_color"}
 
 
+
 def exception_handler(loop, context):
     # first, handle with default handler
     loop.default_exception_handler(context)
@@ -31,21 +32,21 @@ def exception_handler(loop, context):
 
 class StateManager:
     def __init__(self):
-        self.board = boardController.scanBoard()
-        self._settings = FileManager.read_settings()
         self.engine = None
-        self._opening_book = open_opening_book()
-        self.bluetooth_manager = BluetoothManager(self)
-        self.game = self.create_game()
-
         self.event_loop = asyncio.get_event_loop()
         asyncio.set_event_loop_policy(chess.engine.EventLoopPolicy())
         asyncio.set_event_loop(self.event_loop)
         self.event_loop.set_exception_handler(exception_handler)
+        self.event_loop.run_until_complete(self.open_engine())
+
         self.scan_thread = ScanThread(
             callback=lambda board:
-                self.event_loop.call_soon_threadsafe(self.on_board_change, board)
-        )
+                self.event_loop.call_soon_threadsafe(self.on_board_change, board))
+        self.board = boardController.scanBoard()
+        self._settings = FileManager.read_settings()
+        self._opening_book = open_opening_book()
+        self.bluetooth_manager = BluetoothManager(self)
+        self.game = self.create_game()
         self.state = WaitingForSetupState(self)
         self.state.on_enter_state()
 
@@ -107,18 +108,22 @@ class StateManager:
         FileManager.write_settings(self._settings)
         return True
 
-    def request_bluetooth_game(self, bluetooth_player_color):
+    def request_bluetooth_game(self, bluetooth_player_color: chess.Color, game_id:str):
+        if self.is_game_active() and game_id is not None and game_id == self.game.game_id:
+            # This game has the same id as the ongoing game, so there is no need to create a new game
+            return
         self.game.finish_game()
-        self.game = self.create_game(bluetooth_player_color)
+        self.game = self.create_game(bluetooth_player_color, game_id)
         self.go_to_state(WaitingForSetupState(self))
 
     # todo: implement
-    def force_game_pgn(self, pgn):
-        pass
-
-
-
-    def create_game(self, bluetooth_player = None):
+    def force_game_moves(self, moves: str):
+        try:
+            self.game.force_moves(moves)
+        except ValueError as e:
+            print("Error trying to force game moves: " + str(e))
+    def create_game(self, bluetooth_player = None, game_id = None):
+        print("creating game")
         if bluetooth_player is None:
             white_is_engine = self._settings["enable_engine"] and self._settings["engine_color"] == "white"
             white_player_type = PlayerType.ENGINE if white_is_engine else PlayerType.HUMAN
@@ -129,23 +134,22 @@ class StateManager:
             white_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.WHITE else PlayerType.HUMAN
             black_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.BLACK else PlayerType.HUMAN
 
-        return ChessGame(
-            learning_mode=self._settings["learning_mode"],
-            white_player_type=white_player_type,
-            black_player_type=black_player_type,
-            engine_skill=int(self._settings["engine_skill"]),
-            opening_book=self._opening_book,
-            state_manager=self,
-            pgn_round=self._settings["round"]
-        )
+
+        game = ChessGame(learning_mode=self._settings["learning_mode"], white_player_type=white_player_type,
+                         black_player_type=black_player_type, engine_skill=int(self._settings["engine_skill"]),
+                         opening_book=self._opening_book, state_manager=self, pgn_round=self._settings["round"],
+                         engine=self.engine, game_id=game_id)
+        return game
     def start_game(self):
         self.go_to_state(self.game)
 
     def is_game_active(self):
         return self.state is self.game
 
-    def on_game_move(self, move):
+    def on_game_move(self, move, is_move_for_bluetooth_game = False):
         self.bluetooth_manager.write_pgn()
+        if is_move_for_bluetooth_game:
+            self.bluetooth_manager.write_bluetooth_game_move(move)
 
     def wait_for_piece_setup(self):
         self.game = self.create_game()
@@ -158,10 +162,19 @@ class StateManager:
             self._settings["round"] += 1
             FileManager.write_settings(self._settings)
 
+    async def open_engine(self):
+        print("opening engine")
+        if self.engine is None:
+            transport, self.engine = await chess.engine.popen_uci("/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish")
+        print("done opening engine")
+        return self.engine
+
+
     async def close_engine(self):
-        await self.engine.quit()
+        if self.engine is not None:
+            await self.engine.quit()
 
     def cleanup(self):
-        asyncio.run(self.close_engine())
+        self.event_loop.run_until_complete(self.close_engine())
         self._opening_book.close()
         FileManager.write_settings(self._settings)
