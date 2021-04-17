@@ -25,6 +25,7 @@ def parse_color(color: str) -> chess.Color:
     else:
         raise ValueError("color must be black or white")
 
+DEBUG_MESSAGES = False
 
 class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
@@ -84,10 +85,11 @@ class BluetoothManager:
 
     def _connection_loop(self):
         _assert_thread("read-thread", "Must call _connection_loop() from the read thread")
-        print("connection loop")
+        print("trying to connect via bluetooth")
         while True:
             self._server_socket = BluetoothSocket(bluetooth.RFCOMM)
             os.system("sudo hciconfig hci0 piscan")
+            os.system("sudo hciconfig hci0 sspmode 1")
             self._server_socket.bind(("", bluetooth.PORT_ANY))
             self._server_socket.listen(1)
             bluetooth.advertise_service(self._server_socket, "Chess Board",
@@ -97,27 +99,26 @@ class BluetoothManager:
                                         )
 
             self._client_socket, self._client_info = self._server_socket.accept()
-            print("accepted connection")
+            print("connected by bluetooth")
             self._read_loop()
 
     def _read_loop(self):
         _assert_thread("read-thread", "Must call read() from the read thread")
-        print("in read loop")
         try:
             while True:
                 action = self._client_socket.recv(1)[0]
-                print()
-                print("recieved message: ")
-                print("action: ", action)
+                if DEBUG_MESSAGES:
+                    print()
+                    print("recieved message: ")
+                    print("action: ", action)
                 message_length_bytes = self._client_socket.recv(BluetoothManager.MESSAGE_HEAD_LENGTH)
                 message_length = int.from_bytes(message_length_bytes, "big", signed=True)
-                print("message_length: ", message_length)
+                if DEBUG_MESSAGES: print("message_length: ", message_length)
                 if message_length != 0:
                     data = self._client_socket.recv(message_length).decode("utf-8")
                 else:
                     data = ""
-                print("data: '{}'".format(data))
-                print()
+                if DEBUG_MESSAGES: print("data: '{}'\n".format(data))
                 self._handle_message(action, data)
         except IOError:
             print("disconnected from bluetooth")
@@ -244,14 +245,15 @@ class BluetoothManager:
 
     # must be called from the thread 'write-tread'
     def _write(self, action, data):
-        print()
-        print("writing message: ")
-        print("action: ", action)
-        print("data: '{}'".format(data))
-        print()
+        if DEBUG_MESSAGES:
+            print()
+            print("writing message: ")
+            print("action: ", action)
+            print("data: '{}'".format(data))
+            print()
         _assert_thread("write-thread", "Must call write() from the write thread")
         if self._client_socket is None:
-            print("Failed to write")
+            if DEBUG_MESSAGES: print("Failed to write bluetooth message")
             return False
         try:
             self._client_socket.send(BluetoothManager.encode_message(action, data))

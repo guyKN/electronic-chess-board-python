@@ -8,7 +8,7 @@ import chess.engine
 import chess.polyglot
 
 import FileManager
-from AsyncScan import ScanThread
+from ScanThread import ScanThread
 from BluetoothManager import BluetoothManager
 from ChessGame import ChessGame, WaitingForSetupState, PlayerType
 from State import State
@@ -58,7 +58,6 @@ class StateManager:
         self.event_loop.run_forever()
 
     def go_to_state(self, state: State):
-        print(str(state))
         self.state.on_leave_state()
         self.state = state
         self.init_state(self.state)
@@ -80,21 +79,21 @@ class StateManager:
 
     def update_settings(self, new_settings):
         if not legal_setting_keys.issuperset(new_settings.keys()):
-            print("Illegal Key Given")
+            print("Error updating settings: Illegal Key Given")
             return False
         if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and \
                 new_settings["engine_color"] != "black":
-            print("engine color must be white or black")
+            print("Error updating settings: engine color must be white or black")
             return False
 
         if "engine_skill" in new_settings.keys():
             try:
                 engine_skill = int(new_settings["engine_skill"])
             except ValueError:
-                print("Engine skill must be a number")
+                print("Error updating settings: Engine skill must be a number")
                 return False
             if engine_skill < 1:
-                print("Engine skill must be positive")
+                print("Error updating settings: Engine skill must be positive")
                 return False
 
 

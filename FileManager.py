@@ -27,7 +27,6 @@ def format_pgn_file_name(game_round):
 
 def write_pgn(pgn):
     file_name = format_pgn_file_name(pgn.headers["Round"])
-    print()
     with open("{}/{}".format(PGN_PATH, file_name), "w") as out_file:
         out_file.write(str(pgn))
 

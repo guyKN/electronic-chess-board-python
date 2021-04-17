@@ -16,9 +16,7 @@ class ScanThread:
         self._should_quit = True
 
     def _scan_loop(self):
-        prev_board = None
-        while not self._should_quit:
-            board = boardController.scanBoard()
-            if board != prev_board:
-                prev_board = board
-                self._callback(board)
+
+        while True:
+            board = boardController.awaitBoardChange()
+            self._callback(board)

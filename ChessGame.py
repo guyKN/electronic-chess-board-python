@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import random
 import sys
+import time
 from enum import Enum
 from typing import Callable, Any, Iterable, List
 
@@ -125,13 +126,8 @@ class WaitingToPowerOffState(State):
                 self.cancel_delay_handle = None
 
     def shutdown_system(self):
-        print("Shuting down..")
-        if self.state_manager.is_test:
-            asyncio.get_running_loop().stop()
-        else:
-            boardController.cleanup()
-            os.system("sudo shutdown -h now")
-
+        print("Exiting Program.. ")
+        asyncio.get_running_loop().stop()
 
 class PlayerMoveBaseState(State):
     def __init__(self, chess_game: ChessGame):
@@ -274,14 +270,12 @@ class ConfirmMoveState(State):
     def on_enter_state(self):
         boardController.setLeds(const_leds=self._dst_mask)
         if self._delay_handle is None:
-            print("preparing delay handle")
             self._delay_handle = asyncio.get_event_loop().call_later(self.chess_game.confirm_move_delay, self._do_move)
 
 
     def on_board_changed(self, board: chess.SquareSet):
         if board != self._board_after_move:
             self.chess_game.go_to_state(self.on_cancel_state)
-            print("move canceled")
 
     def on_leave_state(self):
         if self._delay_handle is not None:
@@ -521,14 +515,11 @@ class ChessGame(State):
             raise ValueError("Illegal moves provided")
         old_moves = self._board.move_stack
 
-        print("old moves:\n" + str(old_moves))
-        print("new moves:\n" + str(new_moves))
         if new_moves == old_moves:
             # no change was made to the moves, no action needed
             return
 
         move_number_of_difference = index_of_difference(new_moves, old_moves)
-        print("move number of difference: {}".format(move_number_of_difference))
         new_moves = new_moves[move_number_of_difference:]
         self._pop_board_to_move_number(move_number_of_difference)
 
@@ -659,14 +650,17 @@ class ChessGame(State):
             except IndexError:
                 # there is no stored entry in the opening book. Use the engine normally
                 pass
-        # todo: ensure the engine is actually changing difficulty
-        await self.engine.configure({"Skill Level": min(self.engine_skill, 20)}) # todo: configure engine only once
 
         result = await self.engine.play(self._board, chess.engine.Limit(time=self.engine_time),
-                                   info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE))
-        print("\nengine move: ", result.move, ".\ntime: ", result.info["time"], "\nnps: ", result.info["nps"],
-              "\nscore: ", result.info["score"], "\ndepth: ", result.info["depth"], "\nseldepth",
-              result.info["seldepth"])
+                                   info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
+                                        options={"Skill Level": min(self.engine_skill, 20)})
+        print()
+        print("engine move: ", result.move)
+        print("time: ", result.info["time"])
+        print("nps: ", result.info["nps"])
+        print("score: ", result.info["score"])
+        print("depth: ", result.info["depth"])
+        print()
 
         callback(result.move)
 

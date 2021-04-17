@@ -4,6 +4,7 @@ import time
 import asyncio
 import boardController
 import chess.engine
+import os
 
 from StateManager import StateManager
 
@@ -32,6 +33,7 @@ def animation():
     boardController.setSlowBlinkDuration(250)
     boardController.setLeds(slow_blink_leds=0xAA55AA55AA55AA55,
                             slow_blink_leds_2=0x55AA55AA55AA55AA)
+
     while True:
         pass
 
@@ -39,14 +41,20 @@ def is_test():
     return "--run-test" in sys.argv
 
 state_manager = None
+is_test = is_test()
+
 try:
     print("newest version!")
+    boardController.setLedRefreshRate(125)
     boardController.init()
-
-    state_manager = StateManager(is_test=is_test())
+    read_loop()
+    state_manager = StateManager(is_test=is_test)
     state_manager.game_loop()
 finally:
     print("cleanup")
     boardController.cleanup()
     if state_manager is not None:
         state_manager.cleanup()
+    if not is_test:
+        time.sleep(0.1)
+        os.system("sudo shutdown -h now")
