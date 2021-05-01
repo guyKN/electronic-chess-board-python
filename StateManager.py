@@ -10,7 +10,7 @@ import chess.polyglot
 import FileManager
 from ScanThread import ScanThread
 from BluetoothManager import BluetoothManager
-from ChessGame import ChessGame, WaitingForSetupState, PlayerType
+from ChessGame import ChessGame, WaitingForSetupState, PlayerType, LedTestState
 from State import State
 
 # engine path: "/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"
@@ -163,6 +163,14 @@ class StateManager:
             self.bluetooth_manager.write_pgn_file_count()
             self._settings["round"] += 1
             FileManager.write_settings(self._settings)
+
+    def test_leds(self):
+        if isinstance(self.state, ChessGame):
+            self.state.test_leds()
+        elif isinstance(self.state, LedTestState):
+            self.go_to_state(self.state)
+        else:
+            self.go_to_state(LedTestState(self, self.state))
 
     async def open_engine(self):
         print("opening engine")

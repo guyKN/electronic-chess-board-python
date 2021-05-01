@@ -6,7 +6,7 @@ import random
 import sys
 import time
 from enum import Enum
-from typing import Callable, Any, Iterable, List
+from typing import Callable, Any, Iterable, List, Union
 
 import boardController
 import chess
@@ -58,6 +58,29 @@ def parse_move_list_string(moves:str) -> List[chess.Move]:
     return list(map(chess.Move.from_uci ,moves.split(" ")))
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
+
+class LedTestState(State):
+    # todo: ensure this does not conflict with anything
+    def __init__(self, parent_state: Union[StateManager, ChessGame], prev_state: State):
+        self.prev_state = prev_state
+        self.parent_state = parent_state
+        self.delay_handler = None
+
+    def on_enter_state(self):
+        boardController.setLeds(fast_blink_leds=0xAA55AA55AA55AA55)
+        self.delay_handler = asyncio.get_running_loop().call_later(delay=3, callback=self.return_to_prev_state)
+
+    def return_to_prev_state(self):
+        self.parent_state.go_to_state(self.prev_state)
+
+    def on_board_changed(self, board: chess.SquareSet):
+        pass
+
+    def on_leave_state(self):
+        if self.delay_handler is not None:
+            self.delay_handler.cancel()
+        self.delay_handler = None
+
 
 class WaitingForSetupState(State):
     def __init__(self, state_manager: StateManager.StateManager):
@@ -494,7 +517,7 @@ class ChessGame(State):
             self.state.on_board_changed(board)
 
     def on_leave_state(self):
-        self.is_active = True
+        self.is_active = False
         self.state.on_leave_state()
 
     def go_to_state(self, state):
@@ -663,6 +686,12 @@ class ChessGame(State):
         print()
 
         callback(result.move)
+
+    def test_leds(self):
+        if isinstance(self.state, LedTestState):
+            self.go_to_state(self.state)
+        else:
+            self.go_to_state(LedTestState(self, self.state))
 
     # todo: allow a player to resign by illlegally moving their king
     # todo: allow takebacks

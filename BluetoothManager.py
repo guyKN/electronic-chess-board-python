@@ -41,6 +41,7 @@ class BluetoothManager:
         REQUEST_PGN_FILE_COUNT = 7
         START_BLUETOOTH_GAME = 8
         BLUETOOTH_GAME_WRITE_MOVES = 9
+        TEST_LEDS = 10
 
     class ServerToClientActions:
         RET_READ_FEN = 0
@@ -92,7 +93,8 @@ class BluetoothManager:
             os.system("sudo hciconfig hci0 sspmode 1")
             self._server_socket.bind(("", bluetooth.PORT_ANY))
             self._server_socket.listen(1)
-            bluetooth.advertise_service(self._server_socket, "Chess Board",
+            # todo: refactor based on https://pybluez.readthedocs.io/en/latest/api/advertise_service.html
+            bluetooth.advertise_service(self._server_socket, BluetoothManager._UUID,
                                         service_id=BluetoothManager._UUID,
                                         service_classes=[BluetoothManager._UUID, bluetooth.SERIAL_PORT_CLASS],
                                         profiles=[bluetooth.SERIAL_PORT_PROFILE],
@@ -156,6 +158,8 @@ class BluetoothManager:
                 print("Error Starting bluetooth game: " + str(e))
         elif action == BluetoothManager.ClientToServerActions.BLUETOOTH_GAME_WRITE_MOVES:
             self.call_on_main_thread(self.state_manager.force_game_moves, data)
+        elif action == BluetoothManager.ClientToServerActions.TEST_LEDS:
+            self.call_on_main_thread(self.state_manager.test_leds)
         else:
             print("invalid message action: " + action)
 

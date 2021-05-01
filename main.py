@@ -44,10 +44,10 @@ state_manager = None
 is_test = is_test()
 
 try:
-    print("newest version!")
+    print("newest version 4!")
     boardController.setLedRefreshRate(125)
+    boardController.setUseEqualBrightness(True)
     boardController.init()
-    read_loop()
     state_manager = StateManager(is_test=is_test)
     state_manager.game_loop()
 finally:
