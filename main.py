@@ -44,7 +44,7 @@ state_manager = None
 is_test = is_test()
 
 try:
-    print("newest version 4!")
+    print("newest version 5!")
     boardController.setLedRefreshRate(125)
     boardController.setUseEqualBrightness(True)
     boardController.init()

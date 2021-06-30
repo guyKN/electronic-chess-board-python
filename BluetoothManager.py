@@ -12,6 +12,7 @@ import StateManager
 
 import chess
 
+# todo: send the exact current state when first connecting by bluetooth
 
 def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
@@ -25,7 +26,7 @@ def parse_color(color: str) -> chess.Color:
     else:
         raise ValueError("color must be black or white")
 
-DEBUG_MESSAGES = False
+DEBUG_MESSAGES = True
 
 class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
