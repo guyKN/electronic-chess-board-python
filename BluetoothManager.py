@@ -32,28 +32,68 @@ class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
 
     class ClientToServerActions:
-        REQUEST_READ_FEN = 0
-        REQUEST_READ_PGN = 1
-        REQUEST_READ_PREFERENCES = 2
-        WRITE_PREFERENCES = 3
-        REQUEST_PGN_FILE_NAMES = 4
-        REQUEST_READ_PGN_FILE = 5
-        REQUEST_ARCHIVE_PGN_FILE = 6
-        REQUEST_PGN_FILE_COUNT = 7
-        START_BLUETOOTH_GAME = 8
-        BLUETOOTH_GAME_WRITE_MOVES = 9
-        TEST_LEDS = 10
+        """
+        Takes A json representation of all settings to be changed. Only some must actually be used.
+        {
+            learningMode: Boolean. Whether LEDs display all possible legal moves.
+        }
+        """
+        WRITE_PREFERENCES = 0
+        """
+        Creates a normal game that exists only within the chessboard itself and without bluetooth input. Parameters:
+        {
+            aiColor: String. Either 'white', 'black', or 'none'. 
+            aiLevel: Int. From 1 to 20. If aiColor is none, this value is ignored. 
+            id: (optional) String. id for this game to avoid double game creation. If the game already has this id, then this request is ignored. 
+                If not set, the server chooses an ID. 
+            startFen: (optional) String. The fen for the start of the game. If not set, then defaults to the starting position.  
+        }
+        """
+        START_NORMAL_GAME = 1
+        """
+        Called when a bluetooth client wants to make moves on the chessboard. 
+        {
+            gameId: String. A unique id for the game. If this id is different from the previous id, a new game will start. 
+            clientColor: String. Either 'white' or 'black'. The color that the physical chessboard controls. 
+            moves: String. Uci representation of all moves in this game. 
+        }
+        """
+        FORCE_BLUETOOTH_MOVES = 2
+        """
+        Blinks the leds continously test if the connection is working. 
+        """
+        TEST_LEDS = 3
+
+        # todo: handle uploading pgn files.
 
     class ServerToClientActions:
-        RET_READ_FEN = 0
-        RET_READ_PGN = 1
-        RET_READ_PREFERENCES = 2
-        RET_WRITE_PREFERENCES = 3
-        ON_MOVE = 4
-        ON_ERROR = 5
-        RET_PGN_FILE_NAMES = 6
-        RET_PGN_FILE = 7
-        RET_PGN_FILE_COUNT = 8
+        """
+        Sent by the server whether any part of its state is changed. The body is a json object containing all changed fields and their new value. Fields Are:
+        gameActive: Boolean. Whether there is currently an active game right now.
+        gamesToUpload: Int. The number of games stored on this chessboard that can be uploaded.
+        game: {
+            id: String. An id that uniquely identifies each game.
+            aiLevel: a number from 1 to 20 that describes how powerful the AI is.
+            white: String. Describes who controls white. Can be either "human", "ai", or "bluetooth"
+            black: String. Describes who controls black. Can be either "human", "ai", or "bluetooth"
+        }
+        boardState: {
+            fen: String.  the fen representation of the board right now.
+            pgn: String. The pgn representation of the board right now.
+            lastMove: String. uci representation of the last move made on the board.
+            moveCount: Int. The number of moves made in this game.
+            shouldSendMove: Boolean. True if this is a bluetooth game, and the previous move was made by the active player and the move should be sent to lichess.
+        }
+        settings: {
+            learningMode: Boolean. Whether LEDs display all possible legal moves.
+        }
+        """
+        STATE_CHANGED = 0
+        """
+        Sent whether something went wrong on the server side. The body is an optional string description of the error.  
+        """
+        ON_ERROR = 1
+
 
     _UUID = "6c08ff89-2218-449f-9590-66c704994db9"
 
