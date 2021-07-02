@@ -12,15 +12,17 @@ from ScanThread import ScanThread
 from BluetoothManager import BluetoothManager
 from ChessGame import ChessGame, WaitingForSetupState, PlayerType, LedTestState
 from State import State
-
+import random
+import string
 # engine path: "/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"
 
 def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin"):
     return chess.polyglot.open_reader(path)
 
-legal_setting_keys = {"enable_engine", "engine_skill", "engine_color", "learning_mode"}
-setting_keys_requiring_game_restart = {"enable_engine", "engine_skill", "engine_color"}
+legal_setting_keys = {"learningMode"}
 
+def generate_game_id():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=15))
 
 
 def exception_handler(loop, context):
@@ -45,6 +47,7 @@ class StateManager:
             callback=lambda board:
                 self.event_loop.call_soon_threadsafe(self.on_board_change, board))
         self._settings = FileManager.read_settings()
+        self._engine_settings = FileManager.read_engine_settings()
         self._opening_book = open_opening_book()
         self.bluetooth_manager = BluetoothManager(self)
         self.game = self.create_game()
@@ -81,77 +84,82 @@ class StateManager:
         if not legal_setting_keys.issuperset(new_settings.keys()):
             print("Error updating settings: Illegal Key Given")
             return False
-        if "engine_color" in new_settings.keys() and new_settings["engine_color"] != "white" and \
-                new_settings["engine_color"] != "black":
-            print("Error updating settings: engine color must be white or black")
-            return False
-
-        if "engine_skill" in new_settings.keys():
-            try:
-                engine_skill = int(new_settings["engine_skill"])
-            except ValueError:
-                print("Error updating settings: Engine skill must be a number")
-                return False
-            if engine_skill < 1:
-                print("Error updating settings: Engine skill must be positive")
-                return False
-
-
         for key, value in new_settings.items():
             self._settings[key] = value
 
-        if not setting_keys_requiring_game_restart.isdisjoint(new_settings.keys()):
-            # the player has changed a setting that requires the game to be restarted
-            self.game.finish_and_restart_game()
-
-        self.game.learning_mode = self._settings["learning_mode"]
+        self.game.learning_mode = self._settings["learningMode"]
         self.state.on_board_changed(self.board) # refresh the board so that the leds changed to the new settings.
 
         FileManager.write_settings(self._settings)
         return True
 
-    def request_bluetooth_game(self, bluetooth_player_color: chess.Color, game_id:str):
-        if self.is_game_active() and game_id is not None and game_id == self.game.game_id:
-            # This game has the same id as the ongoing game, so there is no need to create a new game
-            return
-        self.game.finish_game()
-        self.game = self.create_game(bluetooth_player_color, game_id)
-        self.go_to_state(self.waiting_for_piece_setup_state)
-
-    # todo: implement
-    def force_game_moves(self, moves: str):
+    def force_bluetooth_moves(self, game_id: str, bluetooth_player: chess.Color, moves: str):
+        if not self.is_game_active() or game_id is None or game_id != self.game.game_id:
+            # the requested game has a different id than the current game, so we need to create a new game
+            self.game = self.create_game(bluetooth_player=bluetooth_player, game_id=game_id)
+            self.go_to_state(self.waiting_for_piece_setup_state)
         try:
             self.game.force_moves(moves)
         except ValueError as e:
-            print("Error trying to force game moves: " + str(e))
-    def create_game(self, bluetooth_player = None, game_id = None):
-        print("creating game")
+            print(f"Error trying to force game moves: {str(e)}")
+
+    def on_game_start_request(self, enable_engine, engine_color, engine_level, game_id=None, start_fen = None):
+        if self.game is not None and self.game.game_id is not None and self.game.game_id == game_id:
+            print("request to start game with the same id. Skipping. ")
+            return
+        if engine_color != "white" and engine_color != "black":
+            raise ValueError("Invalid Engine Color")
+        if engine_level > 20 or engine_level < 1:
+            raise ValueError("Invalid Engine Level")
+        self._engine_settings["enableEngine"] = enable_engine
+        self._engine_settings["engineColor"] = engine_color
+        self._engine_settings["engineLevel"] = engine_level
+        FileManager.write_engine_settings(self._engine_settings)
+        if start_fen is None:
+            start_fen = chess.STARTING_FEN
+        self.game = self.create_game(game_id=game_id, start_fen=start_fen)
+        self.go_to_state(self.waiting_for_piece_setup_state)
+
+
+
+    # todo: bring back pgn round, or replace it with another form of id
+    def create_game(self, bluetooth_player = None, game_id = None, start_fen = chess.STARTING_FEN):
+        print(f"creating game: bluetoothPlayer: {bluetooth_player}")
+        if game_id is None:
+            game_id = generate_game_id()
         if bluetooth_player is None:
-            white_is_engine = self._settings["enable_engine"] and self._settings["engine_color"] == "white"
+            white_is_engine = self._engine_settings["enableEngine"] and self._engine_settings["engineColor"] == "white"
             white_player_type = PlayerType.ENGINE if white_is_engine else PlayerType.HUMAN
 
-            black_is_engine = self._settings["enable_engine"] and self._settings["engine_color"] == "black"
+            black_is_engine = self._engine_settings["enableEngine"] and self._engine_settings["engineColor"] == "black"
             black_player_type = PlayerType.ENGINE if black_is_engine else PlayerType.HUMAN
         else:
             white_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.WHITE else PlayerType.HUMAN
             black_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.BLACK else PlayerType.HUMAN
 
-
-        game = ChessGame(learning_mode=self._settings["learning_mode"], white_player_type=white_player_type,
-                         black_player_type=black_player_type, engine_skill=int(self._settings["engine_skill"]),
-                         opening_book=self._opening_book, state_manager=self, pgn_round=self._settings["round"],
-                         engine=self.engine, game_id=game_id)
-        return game
+        return ChessGame(learning_mode=self._settings["learningMode"],
+                         white_player_type=white_player_type,
+                         black_player_type=black_player_type,
+                         engine_skill=int(self._engine_settings["engineSkill"]),
+                         opening_book=self._opening_book,
+                         state_manager=self,
+                         start_fen=start_fen,
+                         engine=self.engine,
+                         game_id=game_id)
     def start_game(self):
         self.go_to_state(self.game)
+        self.bluetooth_manager.send_game()
+        self.bluetooth_manager.send_board_state()
 
     def is_game_active(self):
         return self.state is self.game
 
-    def on_game_move(self, move, is_move_for_bluetooth_game = False):
-        self.bluetooth_manager.write_pgn()
-        if is_move_for_bluetooth_game:
-            self.bluetooth_manager.write_bluetooth_game_move(move)
+    def is_game_started(self):
+        return self.is_game_active() and self.game.is_started()
+
+    def on_game_move(self):
+        self.bluetooth_manager.send_board_state()
+
 
     def wait_for_piece_setup(self):
         self.game = self.create_game()
@@ -160,9 +168,8 @@ class StateManager:
     def on_game_end(self):
         if self.game.should_save_game():
             FileManager.write_pgn(self.game.get_pgn())
-            self.bluetooth_manager.write_pgn_file_count()
-            self._settings["round"] += 1
-            FileManager.write_settings(self._settings)
+            self.bluetooth_manager.send_num_games_to_upload()
+        self.bluetooth_manager.send_is_game_active()
 
     def test_leds(self):
         if isinstance(self.state, ChessGame):

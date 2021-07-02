@@ -4,7 +4,9 @@ import re
 
 ROOT_PATH = "/home/pi/chessboard-game-3/"
 
-SETTINGS_PATH = ROOT_PATH + "settings/settings.json"
+SETTINGS_PATH = ROOT_PATH + "new_settings/settings.json"
+
+ENGINE_SETTINGS_PATH = f"{ROOT_PATH}new_settings/ai_settings.json"
 
 PGN_PATH = ROOT_PATH + "pgn"
 
@@ -15,10 +17,18 @@ def read_settings():
         data = json.load(json_settings)
     return data
 
-
 def write_settings(settings):
     with open(SETTINGS_PATH, "w") as out_file:
         json.dump(settings, out_file, indent=4)
+
+def read_engine_settings():
+    with open(ENGINE_SETTINGS_PATH) as json_settings:
+        data = json.load(json_settings)
+    return data
+
+def write_engine_settings(ai_settings):
+    with open(ENGINE_SETTINGS_PATH, "w") as out_file:
+        json.dump(ai_settings, out_file, indent=4)
 
 
 def format_pgn_file_name(game_round):

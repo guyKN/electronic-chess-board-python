@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
-import sys
-import time
 from enum import Enum
 from typing import Callable, Any, Iterable, List, Union
 
@@ -12,7 +10,6 @@ import boardController
 import chess
 import chess.engine
 import chess.pgn
-import os
 from chess import Square, SquareSet
 
 import StateManager
@@ -30,19 +27,23 @@ def popcount(square_set):
 def square_mask(square):
     return SquareSet(1 << square)
 
+
 """
 Given two lists, returns the lowest index at which the lists have different values. 
 If the lists are identical, returns their length.
 """
+
+
 def index_of_difference(list1, list2):
     i = 0
     try:
         while list1[i] == list2[i]:
-            i+=1
+            i += 1
     except IndexError:
         # Ignore index out of bounds errors, since that means we got the end of the list and just return.
         pass
     return i
+
 
 def is_legal_move_list(move_list):
     board = chess.Board()
@@ -52,12 +53,15 @@ def is_legal_move_list(move_list):
         board.push(move)
     return True
 
-def parse_move_list_string(moves:str) -> List[chess.Move]:
+
+def parse_move_list_string(moves: str) -> List[chess.Move]:
     if moves == "":
         return []
-    return list(map(chess.Move.from_uci ,moves.split(" ")))
+    return list(map(chess.Move.from_uci, moves.split(" ")))
+
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
+
 
 class LedTestState(State):
     # todo: ensure this does not conflict with anything
@@ -86,7 +90,7 @@ class WaitingForSetupState(State):
     def __init__(self, state_manager: StateManager.StateManager):
         self.state_manager = state_manager
 
-        self.max_num_pieces = 0 # the maximum number of pieces that have been on the board,
+        self.max_num_pieces = 0  # the maximum number of pieces that have been on the board,
         # used to determine how long to wait before powering off when there are no pieces left on the board
 
     def on_enter_state(self):
@@ -102,7 +106,8 @@ class WaitingForSetupState(State):
             self.max_num_pieces = num_pieces
 
         if board == 0:
-            self.state_manager.go_to_state(WaitingToPowerOffState(self, self.state_manager, self.should_have_long_power_off_delay()))
+            self.state_manager.go_to_state(
+                WaitingToPowerOffState(self, self.state_manager, self.should_have_long_power_off_delay()))
         elif num_wrong_pieces == 0:
             self.state_manager.start_game()
         else:
@@ -111,10 +116,12 @@ class WaitingForSetupState(State):
     def should_have_long_power_off_delay(self):
         return self.max_num_pieces <= 4
 
+
 class WaitingToPowerOffState(State):
     POWER_OFF_DELAY_SHORT = 10
     POWER_OFF_DELAY_LONG = 30
     state_manager: StateManager
+
     def __init__(self, on_cancel_state: State, state_manager: StateManager, is_long_delay):
         self.state_manager = state_manager
         self.on_cancel_state = on_cancel_state
@@ -124,7 +131,8 @@ class WaitingToPowerOffState(State):
 
     def on_enter_state(self):
         if self.shutdown_delay_handle is None:
-            self.shutdown_delay_handle = asyncio.get_running_loop().call_later(self.power_off_delay, self.shutdown_system)
+            self.shutdown_delay_handle = asyncio.get_running_loop().call_later(self.power_off_delay,
+                                                                               self.shutdown_system)
 
     def on_leave_state(self):
         if self.shutdown_delay_handle is not None:
@@ -142,7 +150,8 @@ class WaitingToPowerOffState(State):
             # there are pieces on the board, the player has undone the shutdown
             if self.cancel_delay_handle is None:
                 self.cancel_delay_handle = asyncio.get_running_loop().call_later(0.5,
-                                                                                 lambda: self.state_manager.go_to_state(self.on_cancel_state))
+                                                                                 lambda: self.state_manager.go_to_state(
+                                                                                     self.on_cancel_state))
         else:
             if self.cancel_delay_handle is not None:
                 self.cancel_delay_handle.cancel()
@@ -151,6 +160,7 @@ class WaitingToPowerOffState(State):
     def shutdown_system(self):
         print("Exiting Program.. ")
         asyncio.get_running_loop().stop()
+
 
 class PlayerMoveBaseState(State):
     def __init__(self, chess_game: ChessGame):
@@ -274,12 +284,13 @@ class CompleteMoveState(State):
             # the player has moved another unrelated piece, meaning that the move was aborted
             self._chess_game.go_to_state(self._on_cancel_state)
         else:
-            boardController.setLeds(const_leds=0, # should there be constant leds?
+            boardController.setLeds(const_leds=0,  # should there be constant leds?
                                     slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
 
     def confirm_move(self):
         confirm_move_state = ConfirmMoveState(self._chess_game, self._move, self)
         self._chess_game.go_to_state(confirm_move_state)
+
 
 class ConfirmMoveState(State):
     def __init__(self, chess_game: ChessGame, move: chess.Move, on_cancel_state: State):
@@ -295,7 +306,6 @@ class ConfirmMoveState(State):
         if self._delay_handle is None:
             self._delay_handle = asyncio.get_event_loop().call_later(self.chess_game.confirm_move_delay, self._do_move)
 
-
     def on_board_changed(self, board: chess.SquareSet):
         if board != self._board_after_move:
             self.chess_game.go_to_state(self.on_cancel_state)
@@ -304,10 +314,10 @@ class ConfirmMoveState(State):
         if self._delay_handle is not None:
             self._delay_handle.cancel()
             self._delay_handle = None
+
     def _do_move(self):
         self.chess_game.do_move(self.move, is_move_for_bluetooth_game=self.chess_game.is_bluetooth_game)
         self.chess_game.start_new_move()
-
 
 
 class CalculateEngineMoveState(State):
@@ -319,6 +329,7 @@ class CalculateEngineMoveState(State):
         self._is_active = True
         asyncio.create_task(self.chess_game.engine_best_move(self.on_best_move_found))
         boardController.setLeds(0)
+
     def on_board_changed(self, board: chess.SquareSet):
         pass
 
@@ -343,7 +354,8 @@ class ForceMoveState(State):
         self.src_mask = square_mask(engine_move.from_square)
         self.dst_mask = square_mask(engine_move.to_square)
 
-        self.changed_squares = (self.occupied_before_move ^ self.occupied_after_move) | square_mask(engine_move.to_square)
+        self.changed_squares = (self.occupied_before_move ^ self.occupied_after_move) | square_mask(
+            engine_move.to_square)
         self.changed_squares_direct = self.src_mask | self.dst_mask
         self.changed_squares_indirect = self.changed_squares - self.changed_squares_direct
         self.pieces_to_remove_indirect = self.changed_squares_indirect & self.occupied_before_move
@@ -385,11 +397,13 @@ class ForceMoveState(State):
                                     fast_blink_leds=extra_pieces_illegal, fast_blink_leds_2=missing_pieces_illegal)
         else:
             # the player has made the base move, but hasn't moved any of the indirectly changed squares (castling, en passant)
-            boardController.setLeds(slow_blink_leds=self.pieces_to_remove_indirect, slow_blink_leds_2=self.pieces_to_add_indirect,
+            boardController.setLeds(slow_blink_leds=self.pieces_to_remove_indirect,
+                                    slow_blink_leds_2=self.pieces_to_add_indirect,
                                     fast_blink_leds=extra_pieces_illegal, fast_blink_leds_2=missing_pieces_illegal)
 
+
 class ForceMultipleMovesState(State):
-    def __init__(self, chess_game: ChessGame, moves:Iterable[chess.Move]):
+    def __init__(self, chess_game: ChessGame, moves: Iterable[chess.Move]):
         self.move_iterator = iter(moves)
 
         self.chess_game = chess_game
@@ -403,7 +417,6 @@ class ForceMultipleMovesState(State):
             # done going through all the moves
             self.chess_game.start_new_move()
 
-
     def on_board_changed(self, board: chess.SquareSet):
         pass
 
@@ -415,22 +428,22 @@ class GameEndIndicatorState(State):
 
         self._delay_handler = None
 
-
     def on_enter_state(self):
         boardController.setLeds(fast_blink_leds=self.leds_to_blink)
         if self._delay_handler is None:
-            self._delay_handler =  \
+            self._delay_handler = \
                 asyncio.get_running_loop().call_later(ChessGame.GAME_END_DELAY, self.chess_game.finish_and_restart_game)
 
     def on_leave_state(self):
         self._delay_handler.cancel()
+
     def on_board_changed(self, board: chess.SquareSet):
         pass
+
 
 class IdleState(State):
     def __init__(self, chess_game: ChessGame):
         self.chess_game = chess_game
-
 
     def on_enter_state(self):
         pass
@@ -442,7 +455,6 @@ class IdleState(State):
 
 
 class AbortLaterState(State):
-
     def __init__(self, chess_game: ChessGame, on_cancel_state: State):
         self.on_cancel_state = on_cancel_state
         self.chess_game = chess_game
@@ -459,7 +471,7 @@ class AbortLaterState(State):
             return
 
         missing_pieces = self.chess_game.occupied() - board
-        extra_pieces =  board - self.chess_game.occupied()
+        extra_pieces = board - self.chess_game.occupied()
 
         boardController.setLeds(fast_blink_leds=extra_pieces, fast_blink_leds_2=missing_pieces)
 
@@ -468,19 +480,26 @@ class AbortLaterState(State):
             self._delay_handler.cancel()
             self._delay_handler = None
 
+
 class PlayerType(Enum):
     HUMAN = 0
     ENGINE = 1
     BLUETOOTH = 2
+
+    def simple_name(self):
+        names = ["human", "engine", "bluetooth"]
+        return names[self.value]
+
 
 class ChessGame(State):
     MAX_WRONG_PIECES_UNTIL_ABORT = 8
     WRONG_PIECES_ABORT_DELAY = 2.5
     GAME_END_DELAY = 4
 
-    def __init__(self, state_manager:StateManager, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.3, learning_mode=True,
+    def __init__(self, state_manager: StateManager, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.3,
+                 learning_mode=True,
                  white_player_type=PlayerType.HUMAN, black_player_type=PlayerType.HUMAN,
-                 engine_skill=20, opening_book=None, pgn_round=1, engine= None, game_id= None):
+                 engine_skill=20, opening_book=None, pgn_round=1, engine=None, game_id=None):
         self.learning_mode = learning_mode
         self._board = chess.Board(start_fen)
         self.player_types = [black_player_type, white_player_type]
@@ -494,11 +513,29 @@ class ChessGame(State):
         self.is_active = False
         self.engine = engine
         self.game_id = game_id
+        self.is_game_over = False
 
         self.engine_skill = engine_skill
         self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
         self._setup_pgn()
         self.state = self.state_for_next_move()
+
+    def basic_info(self):
+        return {
+            "gameId": self.game_id,
+            "engineLevel": self.engine_skill,
+            "white": self.player_types[chess.WHITE].simple_name(),
+            "black": self.player_types[chess.BLACK].simple_name()
+        }
+
+    def board_state_info(self):
+        return {
+            "fen": self.get_fen(),
+            "pgn": str(self._pgn_game),
+            "lastMove": None if (len(self._board.move_stack) == 0) else str(self._board.move_stack[-1]),
+            "moveCount": len(self._board.move_stack),
+            "shouldSendMove": self.should_send_last_move()
+        }
 
     def on_enter_state(self):
         self.is_active = True
@@ -549,12 +586,11 @@ class ChessGame(State):
         force_multiple_moves_state = ForceMultipleMovesState(self, new_moves)
         self.go_to_state(force_multiple_moves_state)
 
-
-    def do_move(self, move: chess.Move, is_move_for_bluetooth_game = False):
+    def do_move(self, move: chess.Move, is_move_for_bluetooth_game=False):
         self._board.push(move)
         self._pgn_node = self._pgn_node.add_variation(move)
         if self.state_manager is not None:
-            self.state_manager.on_game_move(move, is_move_for_bluetooth_game=is_move_for_bluetooth_game)
+            self.state_manager.on_game_move()
 
     def start_new_move(self):
         self.go_to_state(self.state_for_next_move())
@@ -562,20 +598,25 @@ class ChessGame(State):
     def state_for_next_move(self):
         if self._board.is_checkmate():
             self._pgn_game.headers["Result"] = self._board.result()
+            self.is_game_over = True
             loser_king = self._board.pieces(chess.KING, self._board.turn)
             game_end_indicator = GameEndIndicatorState(loser_king, self)
             return game_end_indicator
         elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw():
             self._pgn_game.headers["Result"] = self._board.result(claim_draw=True)
+            self.is_game_over = True
             kings = self._board.kings
             game_end_indicator = GameEndIndicatorState(kings, self)
             return game_end_indicator
         elif self.player_types[self._board.turn] is PlayerType.ENGINE:
-             return CalculateEngineMoveState(self)
+            return CalculateEngineMoveState(self)
         elif self.player_types[self._board.turn] is PlayerType.HUMAN:
             return PlayerMoveBaseState(self)
         elif self.player_types[self._board.turn] is PlayerType.BLUETOOTH:
             return IdleState(self)
+
+    def is_started(self):
+        return len(self._board.move_stack) != 0 and not self.is_game_over
 
     def is_aborting(self):
         return isinstance(self.state, AbortLaterState)
@@ -588,6 +629,7 @@ class ChessGame(State):
         self.state_manager.wait_for_piece_setup()
 
     def finish_game(self):
+        self.is_game_over = True
         self.state_manager.on_game_end()
 
     def _pop_board(self):
@@ -624,12 +666,22 @@ class ChessGame(State):
         self._pgn_game.headers["White"] = self._player_name(chess.WHITE)
         self._pgn_game.headers["Black"] = self._player_name(chess.BLACK)
         self._pgn_game.headers["Result"] = "*"
+
     """
     Returns true if the game is significant enough to save after the game ends. 
     Is used to filter out short incomplete unnecessary games from clogging the storage. 
     """
+
     def should_save_game(self):
         return not self.is_bluetooth_game and (self._board.is_game_over(claim_draw=True) or self._board.ply() >= 8)
+    """
+    When playing a bluetooth game, the bluetooth client needs to send moves to the server when a move is made on the physical chessboard.
+    Returns true if the last move made on the physical chessboard needs to be sent. 
+    """
+    def should_send_last_move(self):
+        # todo: return false on moves that are forced, becuase those come from the server and don't need to be sent there again.
+        return self.is_bluetooth_game and self.player_types[self._board.turn] == PlayerType.BLUETOOTH
+
     def get_fen(self):
         return self._board.fen()
 
@@ -675,7 +727,7 @@ class ChessGame(State):
                 pass
 
         result = await self.engine.play(self._board, chess.engine.Limit(time=self.engine_time),
-                                   info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
+                                        info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
                                         options={"Skill Level": min(self.engine_skill, 20)})
         print()
         print("engine move: ", result.move)
@@ -695,4 +747,3 @@ class ChessGame(State):
 
     # todo: allow a player to resign by illlegally moving their king
     # todo: allow takebacks
-

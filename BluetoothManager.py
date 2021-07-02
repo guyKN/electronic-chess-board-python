@@ -12,6 +12,9 @@ import StateManager
 
 import chess
 
+import traceback
+
+
 # todo: send the exact current state when first connecting by bluetooth
 
 def _assert_thread(thread_name, error_message):
@@ -28,74 +31,83 @@ def parse_color(color: str) -> chess.Color:
 
 DEBUG_MESSAGES = True
 
+
+class ClientToServerActions:
+    """
+    Takes A json representation of all settings to be changed. Only some must actually be specified.
+    {
+        learningMode: Boolean. Whether LEDs display all possible legal moves.
+    }
+    """
+    WRITE_PREFERENCES = 0
+
+    """
+    Creates a normal game that exists only within the chessboard itself and without bluetooth input. Parameters:
+    {
+        enableEngine: Boolean. Whether to play against an engine or player vs player.
+        engineColor: String. 'white' or 'black'. If enableEngine is false, this value is ignored.
+        engineLevel: Int. From 1 to 20. If enableEngine is false, this value is ignored. 
+        gameId: (optional) String. id for this game to avoid double game creation. If the game already has this id, then this request is ignored. 
+            If not set, the server chooses an ID. 
+        startFen: (optional) String. The fen for the start of the game. If not set, then defaults to the starting position.  
+    }
+    """
+    START_NORMAL_GAME = 1
+
+    """
+    Called when a bluetooth client wants to make moves on the chessboard. 
+    {
+        gameId: String. A unique id for the game. If this id is different from the previous id, a new game will start. 
+        clientColor: String. Either 'white' or 'black'. The color that the physical chessboard does not control. 
+        moves: String. Uci representation of all moves in this game. 
+        winner: String. If the game is not over, then null. If a player resigned or lost, then the name of the winner. If the game is a draw, then 'draw'.
+    }
+    """
+    FORCE_BLUETOOTH_MOVES = 2
+
+    """
+    Blinks the leds continuously test if the connection is working. 
+    """
+    TEST_LEDS = 3
+
+    # todo: handle uploading pgn files.
+
+
+class ServerToClientActions:
+    """
+    Sent by the server whether any part of its state is changed. The body is a json object containing all changed fields and their new value. Fields Are:
+    gameActive: Boolean. Whether there is currently an active game right now.
+    gamesToUpload: Int. The number of games stored on this chessboard that can be uploaded.
+    game: {
+        gameId: String. An id that uniquely identifies each game.
+        engineLevel: a number from 1 to 20 that describes how powerful the AI is.
+        white: String. Describes who controls white. Can be either "human", "engine", or "bluetooth"
+        black: String. Describes who controls black. Can be either "human", "engine", or "bluetooth"
+    }
+    boardState: {
+        fen: String.  the fen representation of the board right now.
+        pgn: String. The pgn representation of the board right now.
+        lastMove: String. uci representation of the last move made on the board. If there have been no moves, this is null.
+        moveCount: Int. The number of moves made in this game.
+        shouldSendMove: Boolean. True if this is a bluetooth game, and the previous move was made by the active player and the move should be sent to lichess.
+    }
+    settings: {
+        learningMode: Boolean. Whether LEDs display all possible legal moves.
+    }
+    """
+    STATE_CHANGED = 0
+    """
+    Sent whether something went wrong on the server side. The body is an optional string description of the error.  
+    """
+    ON_ERROR = 1
+
+
 class BluetoothManager:
     MESSAGE_HEAD_LENGTH = 4
 
-    class ClientToServerActions:
-        """
-        Takes A json representation of all settings to be changed. Only some must actually be used.
-        {
-            learningMode: Boolean. Whether LEDs display all possible legal moves.
-        }
-        """
-        WRITE_PREFERENCES = 0
-        """
-        Creates a normal game that exists only within the chessboard itself and without bluetooth input. Parameters:
-        {
-            aiColor: String. Either 'white', 'black', or 'none'. 
-            aiLevel: Int. From 1 to 20. If aiColor is none, this value is ignored. 
-            id: (optional) String. id for this game to avoid double game creation. If the game already has this id, then this request is ignored. 
-                If not set, the server chooses an ID. 
-            startFen: (optional) String. The fen for the start of the game. If not set, then defaults to the starting position.  
-        }
-        """
-        START_NORMAL_GAME = 1
-        """
-        Called when a bluetooth client wants to make moves on the chessboard. 
-        {
-            gameId: String. A unique id for the game. If this id is different from the previous id, a new game will start. 
-            clientColor: String. Either 'white' or 'black'. The color that the physical chessboard controls. 
-            moves: String. Uci representation of all moves in this game. 
-        }
-        """
-        FORCE_BLUETOOTH_MOVES = 2
-        """
-        Blinks the leds continously test if the connection is working. 
-        """
-        TEST_LEDS = 3
-
-        # todo: handle uploading pgn files.
-
-    class ServerToClientActions:
-        """
-        Sent by the server whether any part of its state is changed. The body is a json object containing all changed fields and their new value. Fields Are:
-        gameActive: Boolean. Whether there is currently an active game right now.
-        gamesToUpload: Int. The number of games stored on this chessboard that can be uploaded.
-        game: {
-            id: String. An id that uniquely identifies each game.
-            aiLevel: a number from 1 to 20 that describes how powerful the AI is.
-            white: String. Describes who controls white. Can be either "human", "ai", or "bluetooth"
-            black: String. Describes who controls black. Can be either "human", "ai", or "bluetooth"
-        }
-        boardState: {
-            fen: String.  the fen representation of the board right now.
-            pgn: String. The pgn representation of the board right now.
-            lastMove: String. uci representation of the last move made on the board.
-            moveCount: Int. The number of moves made in this game.
-            shouldSendMove: Boolean. True if this is a bluetooth game, and the previous move was made by the active player and the move should be sent to lichess.
-        }
-        settings: {
-            learningMode: Boolean. Whether LEDs display all possible legal moves.
-        }
-        """
-        STATE_CHANGED = 0
-        """
-        Sent whether something went wrong on the server side. The body is an optional string description of the error.  
-        """
-        ON_ERROR = 1
-
-
     _UUID = "6c08ff89-2218-449f-9590-66c704994db9"
+
+    state_manager: StateManager
 
     def __init__(self, state_manager: StateManager):
         self.state_manager = state_manager
@@ -143,6 +155,7 @@ class BluetoothManager:
 
             self._client_socket, self._client_info = self._server_socket.accept()
             print("connected by bluetooth")
+            self.send_all()
             self._read_loop()
 
     def _read_loop(self):
@@ -165,128 +178,102 @@ class BluetoothManager:
                 self._handle_message(action, data)
         except IOError:
             print("disconnected from bluetooth")
-            # disconnected
-            pass
 
         self._client_socket.close()
         self._client_socket = None
         self._client_info = None
 
     def _handle_message(self, action, data):
-        if action == BluetoothManager.ClientToServerActions.REQUEST_READ_FEN:
-            self.call_on_main_thread(self.write_fen)
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PGN:
-            self.call_on_main_thread(self.write_pgn)
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PREFERENCES:
-            self.call_on_main_thread(self.return_settings)
-        elif action == BluetoothManager.ClientToServerActions.WRITE_PREFERENCES:
+        if action == ClientToServerActions.WRITE_PREFERENCES:
             self.call_on_main_thread(self.write_settings, data)
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_PGN_FILE_NAMES:
-            self.return_pgn_file_names()
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_READ_PGN_FILE:
-            self.return_pgn_file(data)
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_ARCHIVE_PGN_FILE:
-            self.archive_pgn_file(data)
-        elif action == BluetoothManager.ClientToServerActions.REQUEST_PGN_FILE_COUNT:
-            self.write_pgn_file_count()
-        elif action == BluetoothManager.ClientToServerActions.START_BLUETOOTH_GAME:
-            try:
-                data_json = json.loads(data)
-                bluetooth_player = not parse_color(data_json["clientColor"])
-                game_id = str(data_json["gameId"])
-                self.call_on_main_thread(self.state_manager.request_bluetooth_game, bluetooth_player, game_id)
-            except ValueError as e:
-                print("Error Starting bluetooth game: " + str(e))
-        elif action == BluetoothManager.ClientToServerActions.BLUETOOTH_GAME_WRITE_MOVES:
-            self.call_on_main_thread(self.state_manager.force_game_moves, data)
-        elif action == BluetoothManager.ClientToServerActions.TEST_LEDS:
+        elif action == ClientToServerActions.START_NORMAL_GAME:
+            self.call_on_main_thread(self.start_normal_game, data)
+        elif action == ClientToServerActions.FORCE_BLUETOOTH_MOVES:
+            self.call_on_main_thread(self.force_bluetooth_moves, data)
+        elif action == ClientToServerActions.TEST_LEDS:
             self.call_on_main_thread(self.state_manager.test_leds)
-        else:
-            print("invalid message action: " + action)
-
-    def write_pgn_file_count(self):
-        num_files = len(FileManager.saved_games())
-        self.write_message(
-            action=BluetoothManager.ServerToClientActions.RET_PGN_FILE_COUNT,
-            data=str(num_files))
-
-    def archive_pgn_file(self, data):
-        if FileManager.is_valid_pgn_file_name(data):
-            try:
-                FileManager.archive_file(data)
-            except OSError:
-                error_message = "Invalid file: {}".format(data)
-                print(error_message)
-                self.write_message(
-                    action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                    data=error_message)
-        else:
-            error_message = "Invalid file: {}".format(data)
-            print(error_message)
-            self.write_message(
-                action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                data=error_message)
-
-    def return_pgn_file(self, file_name):
-        if FileManager.is_valid_pgn_file_name(file_name):
-            try:
-                pgn = FileManager.read_pgn(file_name)
-                # put the filename as the first line of the message
-                message = file_name + "\n" + pgn
-                self.write_message(
-                    action=BluetoothManager.ServerToClientActions.RET_PGN_FILE,
-                    data=message)
-            except OSError:
-                error_message = "Invalid file: {}".format(file_name)
-                print(error_message)
-                self.write_message(
-                    action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                    data=error_message)
-        else:
-            error_message = "Illegal file requested: {}".format(file_name)
-            print(error_message)
-            self.write_message(
-                action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                data=error_message)
-
-    def return_pgn_file_names(self):
-        pgn_file_names = FileManager.saved_games()
-        file_names_json = json.dumps(pgn_file_names)
-        self.write_message(
-            action=BluetoothManager.ServerToClientActions.RET_PGN_FILE_NAMES,
-            data=file_names_json)
 
     def write_settings(self, data):
-        settings = json.loads(data)
-        settings_ok = self.state_manager.update_settings(settings)
-        if settings_ok:
-            settings = self.state_manager.get_settings()
+        try:
+            settings = json.loads(data)
+            settings_ok = self.state_manager.update_settings(settings)
+            if not settings_ok:
+                self.write_message(
+                    action=ServerToClientActions.ON_ERROR,
+                    data="Error writing Preferences")
+        except (ValueError, KeyError):
             self.write_message(
-                action=BluetoothManager.ServerToClientActions.RET_READ_PREFERENCES,
-                data=json.dumps(settings))
-        else:
-            self.write_message(
-                action=BluetoothManager.ServerToClientActions.ON_ERROR,
-                data="Error writing Preferences")
+                action=ServerToClientActions.ON_ERROR,
+                data="Error writing Preferences"
+            )
+
+        self.send_settings()
+
+    def start_normal_game(self, data):
+        try:
+            parameters = json.loads(data)
+            self.state_manager.on_game_start_request(enable_engine=parameters["enableEngine"],
+                                                     engine_color=parameters["engineColor"],
+                                                     engine_level=parameters["engineLevel"],
+                                                     game_id=parameters.get("gameId", None),
+                                                     start_fen=parameters.get("startFen", None))
+        except (ValueError, KeyError) as e:
+            print("Error starting game")
+            traceback.print_exc()
+
+    def force_bluetooth_moves(self, data):
+        try:
+            parameters = json.loads(data)
+            self.state_manager.force_bluetooth_moves(
+                game_id=parameters["gameId"],
+                bluetooth_player = not parse_color(parameters["clientColor"]),
+                moves = parameters["moves"]
+            )
+        except (ValueError, KeyError):
+            print("Error starting game")
+            traceback.print_exc()
+
+    def send_all(self):
+        self.send_settings()
+        self.send_num_games_to_upload()
+        self.send_game()
+        self.send_is_game_active()
+        self.send_board_state()
+
+    def send_settings(self):
+        settings = self.state_manager.get_settings()
+        settings_str = json.dumps({"settings": settings})
+        self.write_message(ServerToClientActions.STATE_CHANGED, settings_str)
+
+    def send_game(self):
+        if not self.state_manager.is_game_active():
+            return
+        game_info = self.state_manager.game.basic_info()
+        game_info_str = json.dumps({"game": game_info})
+        self.write_message(ServerToClientActions.STATE_CHANGED, game_info_str)
+
+    def send_board_state(self):
+        if not self.state_manager.is_game_active():
+            return
+        board_state = self.state_manager.game.board_state_info()
+        board_state_str = json.dumps({
+            "boardState": board_state,
+            "gameActive": self.state_manager.is_game_started()
+        })
+        self.write_message(ServerToClientActions.STATE_CHANGED, board_state_str)
+
+    def send_is_game_active(self):
+        data = json.dumps({"gameActive": self.state_manager.is_game_started()})
+        self.write_message(ServerToClientActions.STATE_CHANGED, data)
+
+    def send_num_games_to_upload(self):
+        data = json.dumps({"gamesToUpload": len(FileManager.saved_games())})
+        self.write_message(ServerToClientActions.STATE_CHANGED, data)
+
 
     # Writes data to the via bluetooth. may be called from any thread
     def write_message(self, action, data):
         self._event_loop.call_soon_threadsafe(self._write, action, data)
-
-    def write_fen(self):
-        self.write_message(BluetoothManager.ServerToClientActions.RET_READ_FEN,
-                           self.state_manager.game.get_fen())
-
-    def write_pgn(self):
-        self.write_message(BluetoothManager.ServerToClientActions.RET_READ_PGN,
-                           self.state_manager.game.get_pgn_string())
-
-    def return_settings(self):
-        settings = json.dumps(self.state_manager.get_settings())
-        self.write_message(BluetoothManager.ServerToClientActions.RET_READ_PREFERENCES, settings)
-
-    def write_bluetooth_game_move(self, move: chess.Move):
-        self.write_message(BluetoothManager.ServerToClientActions.ON_MOVE, move.uci())
 
     # must be called from the thread 'write-tread'
     def _write(self, action, data):
