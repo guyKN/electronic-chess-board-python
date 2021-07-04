@@ -316,7 +316,7 @@ class ConfirmMoveState(State):
             self._delay_handle = None
 
     def _do_move(self):
-        self.chess_game.do_move(self.move, is_move_for_bluetooth_game=self.chess_game.is_bluetooth_game)
+        self.chess_game.do_move(self.move)
         self.chess_game.start_new_move()
 
 
@@ -389,7 +389,7 @@ class ForceMoveState(State):
 
         if physical_board_occupied == self.occupied_after_move and ((not self.is_capture) or self.capture_picked_up):
             # The player has made the move
-            self.chess_game.do_move(self.move)
+            self.chess_game.do_move(self.move, is_forced_move=True)
             self.on_complete_callback()
         elif wrong_pieces_direct or (self.is_capture and (not self.capture_picked_up)):
             # The player has not yet moved the piece from its source to its destination
@@ -403,10 +403,11 @@ class ForceMoveState(State):
 
 
 class ForceMultipleMovesState(State):
-    def __init__(self, chess_game: ChessGame, moves: Iterable[chess.Move]):
+    def __init__(self, chess_game: ChessGame, moves: Iterable[chess.Move], forced_winner: str):
+        print(f"inside ForceMultipleMovesState.__init__, forced_winner={forced_winner}")
         self.move_iterator = iter(moves)
-
         self.chess_game = chess_game
+        self.forced_winner = forced_winner
 
     def on_enter_state(self):
         try:
@@ -415,7 +416,7 @@ class ForceMultipleMovesState(State):
             self.chess_game.go_to_state(force_move_state)
         except StopIteration:
             # done going through all the moves
-            self.chess_game.start_new_move()
+            self.chess_game.start_new_move(self.forced_winner)
 
     def on_board_changed(self, board: chess.SquareSet):
         pass
@@ -514,6 +515,7 @@ class ChessGame(State):
         self.engine = engine
         self.game_id = game_id
         self.is_game_over = False
+        self.was_last_move_forced = False
 
         self.engine_skill = engine_skill
         self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
@@ -565,7 +567,8 @@ class ChessGame(State):
             self.state_manager.init_state(self.state)
 
     # todo: handle ValueErrors when calling this method
-    def force_moves(self, moves_string: str):
+    def force_moves(self, moves_string: str, forced_winner: str):
+        print(f"inside force_moves, forced_winner={forced_winner}")
         if not self.is_bluetooth_game:
             raise ValueError("Moves may only be forced from an external source when playing a bluetooth game.")
 
@@ -575,7 +578,7 @@ class ChessGame(State):
             raise ValueError("Illegal moves provided")
         old_moves = self._board.move_stack
 
-        if new_moves == old_moves:
+        if new_moves == old_moves and forced_winner is None:
             # no change was made to the moves, no action needed
             return
 
@@ -583,26 +586,42 @@ class ChessGame(State):
         new_moves = new_moves[move_number_of_difference:]
         self._pop_board_to_move_number(move_number_of_difference)
 
-        force_multiple_moves_state = ForceMultipleMovesState(self, new_moves)
+        force_multiple_moves_state = ForceMultipleMovesState(self, new_moves, forced_winner)
         self.go_to_state(force_multiple_moves_state)
 
-    def do_move(self, move: chess.Move, is_move_for_bluetooth_game=False):
+
+
+    def do_move(self, move: chess.Move, is_forced_move = False):
+        self.was_last_move_forced = is_forced_move
         self._board.push(move)
         self._pgn_node = self._pgn_node.add_variation(move)
         if self.state_manager is not None:
             self.state_manager.on_game_move()
 
-    def start_new_move(self):
-        self.go_to_state(self.state_for_next_move())
+    def start_new_move(self, forced_winner = None):
+        self.go_to_state(self.state_for_next_move(forced_winner))
 
-    def state_for_next_move(self):
+    def state_for_next_move(self, forced_winner = None):
+        print(f"inside state_for_next_move, forced_winner={forced_winner}")
+        if forced_winner == "white":
+            self._pgn_game.headers["Result"] = "1-0"
+            self.is_game_over = True
+            loser_king = self._board.pieces(chess.KING, chess.BLACK)
+            game_end_indicator = GameEndIndicatorState(loser_king, self)
+            return game_end_indicator
+        elif forced_winner == "black":
+            self._pgn_game.headers["Result"] = "0-1"
+            self.is_game_over = True
+            loser_king = self._board.pieces(chess.KING, chess.WHITE)
+            game_end_indicator = GameEndIndicatorState(loser_king, self)
+            return game_end_indicator
         if self._board.is_checkmate():
             self._pgn_game.headers["Result"] = self._board.result()
             self.is_game_over = True
             loser_king = self._board.pieces(chess.KING, self._board.turn)
             game_end_indicator = GameEndIndicatorState(loser_king, self)
             return game_end_indicator
-        elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw():
+        elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw() or forced_winner == "draw":
             self._pgn_game.headers["Result"] = self._board.result(claim_draw=True)
             self.is_game_over = True
             kings = self._board.kings
@@ -667,6 +686,8 @@ class ChessGame(State):
         self._pgn_game.headers["Black"] = self._player_name(chess.BLACK)
         self._pgn_game.headers["Result"] = "*"
 
+
+
     """
     Returns true if the game is significant enough to save after the game ends. 
     Is used to filter out short incomplete unnecessary games from clogging the storage. 
@@ -679,8 +700,7 @@ class ChessGame(State):
     Returns true if the last move made on the physical chessboard needs to be sent. 
     """
     def should_send_last_move(self):
-        # todo: return false on moves that are forced, becuase those come from the server and don't need to be sent there again.
-        return self.is_bluetooth_game and self.player_types[self._board.turn] == PlayerType.BLUETOOTH
+        return self.is_bluetooth_game and self.player_types[self._board.turn] == PlayerType.BLUETOOTH and not self.was_last_move_forced
 
     def get_fen(self):
         return self._board.fen()

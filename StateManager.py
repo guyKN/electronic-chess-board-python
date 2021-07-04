@@ -93,13 +93,13 @@ class StateManager:
         FileManager.write_settings(self._settings)
         return True
 
-    def force_bluetooth_moves(self, game_id: str, bluetooth_player: chess.Color, moves: str):
+    def force_bluetooth_moves(self, game_id: str, bluetooth_player: chess.Color, moves: str, forced_winner: str):
         if not self.is_game_active() or game_id is None or game_id != self.game.game_id:
             # the requested game has a different id than the current game, so we need to create a new game
             self.game = self.create_game(bluetooth_player=bluetooth_player, game_id=game_id)
             self.go_to_state(self.waiting_for_piece_setup_state)
         try:
-            self.game.force_moves(moves)
+            self.game.force_moves(moves, forced_winner)
         except ValueError as e:
             print(f"Error trying to force game moves: {str(e)}")
 
@@ -119,12 +119,13 @@ class StateManager:
             start_fen = chess.STARTING_FEN
         self.game = self.create_game(game_id=game_id, start_fen=start_fen)
         self.go_to_state(self.waiting_for_piece_setup_state)
+        self.bluetooth_manager.send_game()
 
 
 
     # todo: bring back pgn round, or replace it with another form of id
     def create_game(self, bluetooth_player = None, game_id = None, start_fen = chess.STARTING_FEN):
-        print(f"creating game: bluetoothPlayer: {bluetooth_player}")
+        print("creating game. ")
         if game_id is None:
             game_id = generate_game_id()
         if bluetooth_player is None:
@@ -164,10 +165,11 @@ class StateManager:
     def wait_for_piece_setup(self):
         self.game = self.create_game()
         self.go_to_state(self.waiting_for_piece_setup_state)
+        self.bluetooth_manager.send_game()
 
     def on_game_end(self):
         if self.game.should_save_game():
-            FileManager.write_pgn(self.game.get_pgn())
+            FileManager.write_pgn(self.game.get_pgn(), self.game.game_id)
             self.bluetooth_manager.send_num_games_to_upload()
         self.bluetooth_manager.send_is_game_active()
 

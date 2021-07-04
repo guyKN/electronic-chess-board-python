@@ -48,6 +48,7 @@ try:
     boardController.setLedRefreshRate(125)
     boardController.setUseEqualBrightness(True)
     boardController.init()
+    # read_loop()
     state_manager = StateManager(is_test=is_test)
     state_manager.game_loop()
 finally:

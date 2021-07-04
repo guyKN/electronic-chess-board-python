@@ -66,9 +66,22 @@ class ClientToServerActions:
     FORCE_BLUETOOTH_MOVES = 2
 
     """
+    Called when the Client wants to start uploading saved pgn files to a server. The server should then return with a RET_PGN_FILES message. 
+    """
+    REQUEST_PGN_FILES = 3
+
+    """
+    Called after a pgn file has been successfully uploaded to a server, and should be archived. 
+    {
+        name: String. the name of the file, given by RET_PGN_FILE_NAMES. 
+    }
+    """
+    REQUEST_ARCHIVE_PGN_FILE = 4
+
+    """
     Blinks the leds continuously test if the connection is working. 
     """
-    TEST_LEDS = 3
+    TEST_LEDS = 5
 
     # todo: handle uploading pgn files.
 
@@ -96,10 +109,25 @@ class ServerToClientActions:
     }
     """
     STATE_CHANGED = 0
+
+
+    """
+    Called after receiving REQUEST_PGN_FILES from server. 
+    {
+        files: [
+            {
+                name: String. 
+                pgn: String. 
+            }
+        ]
+    }
+    """
+    RET_PGN_FILES = 1
+
     """
     Sent whether something went wrong on the server side. The body is an optional string description of the error.  
     """
-    ON_ERROR = 1
+    ON_ERROR = 2
 
 
 class BluetoothManager:
@@ -190,6 +218,10 @@ class BluetoothManager:
             self.call_on_main_thread(self.start_normal_game, data)
         elif action == ClientToServerActions.FORCE_BLUETOOTH_MOVES:
             self.call_on_main_thread(self.force_bluetooth_moves, data)
+        elif action == ClientToServerActions.REQUEST_PGN_FILES:
+            self.call_on_main_thread(self.send_pgn_files)
+        elif action == ClientToServerActions.REQUEST_ARCHIVE_PGN_FILE:
+            self.call_on_main_thread(self.archive_pgn_file, data)
         elif action == ClientToServerActions.TEST_LEDS:
             self.call_on_main_thread(self.state_manager.test_leds)
 
@@ -227,11 +259,31 @@ class BluetoothManager:
             self.state_manager.force_bluetooth_moves(
                 game_id=parameters["gameId"],
                 bluetooth_player = not parse_color(parameters["clientColor"]),
-                moves = parameters["moves"]
+                moves = parameters["moves"],
+                forced_winner = parameters.get("winner", None)
             )
         except (ValueError, KeyError):
             print("Error starting game")
             traceback.print_exc()
+
+    def archive_pgn_file(self, data):
+        try:
+            data_json = json.loads(data)
+            file_name = data_json["name"]
+            if FileManager.is_valid_pgn_file_name(file_name):
+                FileManager.archive_file(file_name)
+                self.send_num_games_to_upload()
+            else:
+                print(f"Recieved invalid file name: {file_name}")
+        except (ValueError, KeyError):
+            print("Error archiving file")
+            traceback.print_exc()
+
+    # Not included in send_all, because this should only be called when the client specifically requests it.
+    def send_pgn_files(self):
+        saved_games = FileManager.saved_games()
+        data = json.dumps({"files":saved_games})
+        self.write_message(ServerToClientActions.RET_PGN_FILES, data)
 
     def send_all(self):
         self.send_settings()
@@ -246,15 +298,11 @@ class BluetoothManager:
         self.write_message(ServerToClientActions.STATE_CHANGED, settings_str)
 
     def send_game(self):
-        if not self.state_manager.is_game_active():
-            return
         game_info = self.state_manager.game.basic_info()
         game_info_str = json.dumps({"game": game_info})
         self.write_message(ServerToClientActions.STATE_CHANGED, game_info_str)
 
     def send_board_state(self):
-        if not self.state_manager.is_game_active():
-            return
         board_state = self.state_manager.game.board_state_info()
         board_state_str = json.dumps({
             "boardState": board_state,

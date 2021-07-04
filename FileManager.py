@@ -31,13 +31,13 @@ def write_engine_settings(ai_settings):
         json.dump(ai_settings, out_file, indent=4)
 
 
-def format_pgn_file_name(game_round):
-    return "game_{:05}.pgn".format(int(game_round))
+def format_pgn_file_name(game_id):
+    return f"game_{game_id}.pgn"
 
 
-def write_pgn(pgn):
-    file_name = format_pgn_file_name(pgn.headers["Round"])
-    with open("{}/{}".format(PGN_PATH, file_name), "w") as out_file:
+def write_pgn(pgn, game_id):
+    file_name = format_pgn_file_name(game_id)
+    with open(f"{PGN_PATH}/{file_name}", "w") as out_file:
         out_file.write(str(pgn))
 
 def read_pgn(file_name):
@@ -45,11 +45,11 @@ def read_pgn(file_name):
         return out_file.read()
 
 def is_valid_pgn_file_name(file_name):
-    return re.match("\Agame_\d\d*\.pgn\Z", file_name)
+    return re.match("\Agame_[a-zA-Z0-9]+\.pgn\Z", file_name)
 
 def archive_file(file_name):
     os.rename("{}/{}".format(PGN_PATH, file_name),
               "{}/{}".format(PGN_ARCHIVE_PATH, file_name))
 
 def saved_games():
-    return [file for file in os.listdir(PGN_PATH) if is_valid_pgn_file_name(file)]
+    return [{"name": fileName, "pgn": read_pgn(fileName)} for fileName in os.listdir(PGN_PATH) if is_valid_pgn_file_name(fileName)]
