@@ -8,6 +8,8 @@ import os
 
 from StateManager import StateManager
 
+# todo: make the game start off as player vs. player by default, unless specifically chosen
+# todo: the engine level is always set to 20, no matter what the user inputs. Fix this.
 def read_loop():
     prev_board = None
     prev_time = time.time()
@@ -29,6 +31,7 @@ def read_loop():
         if time.time() - prev_time > 1:
             prev_time = time.time()
             print("*", end="")
+
 def animation():
     boardController.setSlowBlinkDuration(250)
     boardController.setLeds(slow_blink_leds=0xAA55AA55AA55AA55,
@@ -37,20 +40,27 @@ def animation():
     while True:
         pass
 
+#
 def is_test():
     return "--run-test" in sys.argv
 
+def is_led_test():
+    return "--led-test" in sys.argv
+
 state_manager = None
 is_test = is_test()
+is_led_test = is_led_test()
 
 try:
     print("newest version 5!")
     boardController.setLedRefreshRate(125)
     boardController.setUseEqualBrightness(True)
     boardController.init()
-    # read_loop()
-    state_manager = StateManager(is_test=is_test)
-    state_manager.game_loop()
+    if is_led_test:
+        read_loop()
+    else:
+        state_manager = StateManager(is_test=is_test)
+        state_manager.game_loop()
 finally:
     print("cleanup")
     boardController.cleanup()

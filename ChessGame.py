@@ -62,7 +62,6 @@ def parse_move_list_string(moves: str) -> List[chess.Move]:
 
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
-
 class LedTestState(State):
     # todo: ensure this does not conflict with anything
     def __init__(self, parent_state: Union[StateManager, ChessGame], prev_state: State):

@@ -22,6 +22,7 @@ def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin")
 legal_setting_keys = {"learningMode"}
 
 def generate_game_id():
+    # todo: add prefix to distinguish from lichess game ids, since overlap of id is theoretically possible
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=15))
 
 
@@ -33,6 +34,9 @@ def exception_handler(loop, context):
     loop.stop()
 
 class StateManager:
+
+    DEFAULT_NO_ENGINE = True
+
     def __init__(self, is_test = False):
         self.is_test = is_test
         self.board = boardController.scanBoard()
@@ -113,7 +117,7 @@ class StateManager:
             raise ValueError("Invalid Engine Level")
         self._engine_settings["enableEngine"] = enable_engine
         self._engine_settings["engineColor"] = engine_color
-        self._engine_settings["engineLevel"] = engine_level
+        self._engine_settings["engineSkill"] = engine_level
         FileManager.write_engine_settings(self._engine_settings)
         if start_fen is None:
             start_fen = chess.STARTING_FEN
@@ -172,6 +176,10 @@ class StateManager:
             FileManager.write_pgn(self.game.get_pgn(), self.game.game_id)
             self.bluetooth_manager.send_num_games_to_upload()
         self.bluetooth_manager.send_is_game_active()
+
+        if StateManager.DEFAULT_NO_ENGINE:
+            self._engine_settings["enableEngine"] = False
+            FileManager.write_settings(self._engine_settings)
 
     def test_leds(self):
         if isinstance(self.state, ChessGame):
