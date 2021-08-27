@@ -35,7 +35,7 @@ def exception_handler(loop, context):
 
 class StateManager:
 
-    DEFAULT_NO_ENGINE = True
+    DEFAULT_ENGINE_WHITE = True
 
     def __init__(self, is_test = False):
         self.is_test = is_test
@@ -52,6 +52,8 @@ class StateManager:
                 self.event_loop.call_soon_threadsafe(self.on_board_change, board))
         self._settings = FileManager.read_settings()
         self._engine_settings = FileManager.read_engine_settings()
+        self.configure_engine_after_game()
+
         self._opening_book = open_opening_book()
         self.bluetooth_manager = BluetoothManager(self)
         self.game = self.create_game()
@@ -113,7 +115,7 @@ class StateManager:
             return
         if engine_color != "white" and engine_color != "black":
             raise ValueError("Invalid Engine Color")
-        if engine_level > 20 or engine_level < 1:
+        if engine_level < 1:
             raise ValueError("Invalid Engine Level")
         self._engine_settings["enableEngine"] = enable_engine
         self._engine_settings["engineColor"] = engine_color
@@ -177,9 +179,7 @@ class StateManager:
             self.bluetooth_manager.send_num_games_to_upload()
         self.bluetooth_manager.send_is_game_active()
 
-        if StateManager.DEFAULT_NO_ENGINE:
-            self._engine_settings["enableEngine"] = False
-            FileManager.write_settings(self._engine_settings)
+        self.configure_engine_after_game()
 
     def test_leds(self):
         if isinstance(self.state, ChessGame):
@@ -188,6 +188,11 @@ class StateManager:
             self.go_to_state(self.state)
         else:
             self.go_to_state(LedTestState(self, self.state))
+
+    def configure_engine_after_game(self):
+        if StateManager.DEFAULT_ENGINE_WHITE:
+            self._engine_settings["engineColor"] = "black"
+            FileManager.write_settings(self._engine_settings)
 
     async def open_engine(self):
         print("opening engine")

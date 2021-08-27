@@ -63,6 +63,7 @@ def parse_move_list_string(moves: str) -> List[chess.Move]:
 STARTING_SQUARES = SquareSet(0xFFFF00000000FFFF)
 
 class LedTestState(State):
+    DURATION = 6
     # todo: ensure this does not conflict with anything
     def __init__(self, parent_state: Union[StateManager, ChessGame], prev_state: State):
         self.prev_state = prev_state
@@ -70,14 +71,13 @@ class LedTestState(State):
         self.delay_handler = None
 
     def on_enter_state(self):
-        boardController.setLeds(fast_blink_leds=0xAA55AA55AA55AA55)
-        self.delay_handler = asyncio.get_running_loop().call_later(delay=3, callback=self.return_to_prev_state)
+        self.delay_handler = asyncio.get_running_loop().call_later(delay=LedTestState.DURATION, callback=self.return_to_prev_state)
 
     def return_to_prev_state(self):
         self.parent_state.go_to_state(self.prev_state)
 
     def on_board_changed(self, board: chess.SquareSet):
-        pass
+        boardController.setLeds(const_leds=board)
 
     def on_leave_state(self):
         if self.delay_handler is not None:
@@ -492,6 +492,8 @@ class PlayerType(Enum):
 
 
 class ChessGame(State):
+    MAX_NORMAL_ENGINE_SKILL = 8 # when the engine skill goes beyond this number, instead of getting smarter, stockfish simply gets more time
+
     MAX_WRONG_PIECES_UNTIL_ABORT = 8
     WRONG_PIECES_ABORT_DELAY = 2.5
     GAME_END_DELAY = 4
@@ -499,7 +501,7 @@ class ChessGame(State):
     def __init__(self, state_manager: StateManager, *, start_fen=chess.STARTING_FEN, confirm_move_delay=0.3,
                  learning_mode=True,
                  white_player_type=PlayerType.HUMAN, black_player_type=PlayerType.HUMAN,
-                 engine_skill=20, opening_book=None, pgn_round=1, engine=None, game_id=None):
+                 engine_skill=8, opening_book=None, pgn_round=1, engine=None, game_id=None):
         self.learning_mode = learning_mode
         self._board = chess.Board(start_fen)
         self.player_types = [black_player_type, white_player_type]
@@ -517,7 +519,6 @@ class ChessGame(State):
         self.was_last_move_forced = False
 
         self.engine_skill = engine_skill
-        self.engine_time = 1 if engine_skill <= 20 else engine_skill - 19  # engine skill beyond 20 gives the engine additional time to think
         self._setup_pgn()
         self.state = self.state_for_next_move()
 
@@ -733,21 +734,33 @@ class ChessGame(State):
     def inactive_player_pieces(self):
         return SquareSet(self._board.occupied_co[not self._board.turn])
 
+    def get_stockfish_level(self):
+        engine_skill_to_stockfish_level = [1, 4, 7, 10, 13, 16, 18, 20]
+        return engine_skill_to_stockfish_level[min(self.engine_skill, ChessGame.MAX_NORMAL_ENGINE_SKILL) - 1]
+
+    def get_stockfish_time(self):
+        return max(1, self.engine_skill - ChessGame.MAX_NORMAL_ENGINE_SKILL + 1)
+
+
+
     async def engine_best_move(self, callback: Callable[[chess.Move], Any]):
         # randomly decide whether to use opening book or not
-        if (self._opening_book is not None) and (random.uniform(1, 20) <= self.engine_skill):
+        if (self._opening_book is not None) and (random.uniform(1, ChessGame.MAX_NORMAL_ENGINE_SKILL) <= self.engine_skill):
             try:
                 entry = self._opening_book.choice(self._board)
-                await asyncio.sleep(self.engine_time / 4)  # todo: make a better delay
-                print("Engine move from Opening book: ", str(entry.move))
+                await asyncio.sleep(0.2)  # todo: make a better delay
+                print("Engine move from opening book: ", str(entry.move))
                 callback(entry.move)
             except IndexError:
                 # there is no stored entry in the opening book. Use the engine normally
                 pass
 
-        result = await self.engine.play(self._board, chess.engine.Limit(time=self.engine_time),
+        stockfish_skill_level = self.get_stockfish_level()
+        stockfish_time = self.get_stockfish_time()
+        print(f"stockfish level: {stockfish_skill_level}, stockfish time: {stockfish_time}")
+        result = await self.engine.play(self._board, chess.engine.Limit(time=stockfish_time),
                                         info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
-                                        options={"Skill Level": min(self.engine_skill, 20)})
+                                        options={"Skill Level": stockfish_skill_level})
         print()
         print("engine move: ", result.move)
         print("time: ", result.info["time"])

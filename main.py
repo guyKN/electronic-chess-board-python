@@ -8,8 +8,6 @@ import os
 
 from StateManager import StateManager
 
-# todo: make the game start off as player vs. player by default, unless specifically chosen
-# todo: the engine level is always set to 20, no matter what the user inputs. Fix this.
 def read_loop():
     prev_board = None
     prev_time = time.time()

@@ -46,7 +46,7 @@ class ClientToServerActions:
     {
         enableEngine: Boolean. Whether to play against an engine or player vs player.
         engineColor: String. 'white' or 'black'. If enableEngine is false, this value is ignored.
-        engineLevel: Int. From 1 to 20. If enableEngine is false, this value is ignored. 
+        engineLevel: Positive Int. If enableEngine is false, this value is ignored. 
         gameId: (optional) String. id for this game to avoid double game creation. If the game already has this id, then this request is ignored. 
             If not set, the server chooses an ID. 
         startFen: (optional) String. The fen for the start of the game. If not set, then defaults to the starting position.  
@@ -93,7 +93,7 @@ class ServerToClientActions:
     gamesToUpload: Int. The number of games stored on this chessboard that can be uploaded.
     game: {
         gameId: String. An id that uniquely identifies each game.
-        engineLevel: a number from 1 to 20 that describes how powerful the AI is.
+        engineLevel: a number from 1 to 8 (or theoretically more if giving the engine more time) that describes how powerful the AI is.
         white: String. Describes who controls white. Can be either "human", "engine", or "bluetooth"
         black: String. Describes who controls black. Can be either "human", "engine", or "bluetooth"
     }
