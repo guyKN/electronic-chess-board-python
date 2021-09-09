@@ -51,5 +51,11 @@ def archive_file(file_name):
     os.rename("{}/{}".format(PGN_PATH, file_name),
               "{}/{}".format(PGN_ARCHIVE_PATH, file_name))
 
+def archive_all():
+    for file in os.listdir(PGN_PATH):
+        if is_valid_pgn_file_name(file):
+            archive_file(file)
+
+
 def saved_games():
     return [{"name": fileName, "pgn": read_pgn(fileName)} for fileName in os.listdir(PGN_PATH) if is_valid_pgn_file_name(fileName)]

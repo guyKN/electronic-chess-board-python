@@ -51,6 +51,7 @@ class StateManager:
             callback=lambda board:
                 self.event_loop.call_soon_threadsafe(self.on_board_change, board))
         self._settings = FileManager.read_settings()
+        print(f"self._settings: {self._settings}")
         self._engine_settings = FileManager.read_engine_settings()
         self.configure_engine_after_game()
 
@@ -144,6 +145,8 @@ class StateManager:
             white_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.WHITE else PlayerType.HUMAN
             black_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.BLACK else PlayerType.HUMAN
 
+        print(self._settings)
+
         return ChessGame(learning_mode=self._settings["learningMode"],
                          white_player_type=white_player_type,
                          black_player_type=black_player_type,
@@ -192,7 +195,7 @@ class StateManager:
     def configure_engine_after_game(self):
         if StateManager.DEFAULT_ENGINE_WHITE:
             self._engine_settings["engineColor"] = "black"
-            FileManager.write_settings(self._engine_settings)
+            FileManager.write_engine_settings(self._engine_settings)
 
     async def open_engine(self):
         print("opening engine")

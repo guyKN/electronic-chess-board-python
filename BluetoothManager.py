@@ -2,17 +2,16 @@ import asyncio
 import json
 import os
 import threading
+import traceback
+from dataclasses import dataclass
 from threading import Thread
 
 import bluetooth
+import chess
 from bluetooth import BluetoothSocket
 
 import FileManager
 import StateManager
-
-import chess
-
-import traceback
 
 
 # todo: send the exact current state when first connecting by bluetooth
@@ -21,6 +20,7 @@ def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
         raise RuntimeError(error_message)
 
+
 def parse_color(color: str) -> chess.Color:
     if color == "white":
         return chess.WHITE
@@ -28,6 +28,7 @@ def parse_color(color: str) -> chess.Color:
         return chess.BLACK
     else:
         raise ValueError("color must be black or white")
+
 
 DEBUG_MESSAGES = True
 
@@ -71,9 +72,10 @@ class ClientToServerActions:
     REQUEST_PGN_FILES = 3
 
     """
-    Called after a pgn file has been successfully uploaded to a server, and should be archived. 
+    Called after a pgn file has been successfully uploaded to a server, and should be archived. If all is true, then name must be excluded. Otherwise, all may be excluded or be set to false. 
     {
-        name: String. the name of the file, given by RET_PGN_FILE_NAMES. 
+        all: (optional) Boolean. If set to true, all pgn files will be archived instead of just one. 
+        name: (optional) String. the name of the file, given by RET_PGN_FILE_NAMES. 
     }
     """
     REQUEST_ARCHIVE_PGN_FILE = 4
@@ -83,8 +85,15 @@ class ClientToServerActions:
     """
     TEST_LEDS = 5
 
+
+
     # todo: handle uploading pgn files.
 
+
+@dataclass
+class Message:
+    action: int
+    data: str
 
 class ServerToClientActions:
     """
@@ -110,24 +119,25 @@ class ServerToClientActions:
     """
     STATE_CHANGED = 0
 
-
     """
     Called after receiving REQUEST_PGN_FILES from server. 
     {
-        files: [
-            {
-                name: String. 
-                pgn: String. 
-            }
-        ]
+        name: String. 
+        pgn: String. 
     }
     """
-    RET_PGN_FILES = 1
+    RET_PGN_FILE = 1
+
+    """
+    Called after one or more RET_PGN_FILE messages. Indicates that all pgn files have been send. 
+    """
+
+    PGN_FILES_DONE = 2
 
     """
     Sent whether something went wrong on the server side. The body is an optional string description of the error.  
     """
-    ON_ERROR = 2
+    ON_ERROR = 3
 
 
 class BluetoothManager:
@@ -153,7 +163,6 @@ class BluetoothManager:
 
     def call_on_main_thread(self, callback, *args):
         return self.state_manager.event_loop.call_soon_threadsafe(callback, *args)
-
 
     @staticmethod
     def encode_message(action, data):
@@ -258,9 +267,9 @@ class BluetoothManager:
             parameters = json.loads(data)
             self.state_manager.force_bluetooth_moves(
                 game_id=parameters["gameId"],
-                bluetooth_player = not parse_color(parameters["clientColor"]),
-                moves = parameters["moves"],
-                forced_winner = parameters.get("winner", None)
+                bluetooth_player=not parse_color(parameters["clientColor"]),
+                moves=parameters["moves"],
+                forced_winner=parameters.get("winner", None)
             )
         except (ValueError, KeyError):
             print("Error starting game")
@@ -269,21 +278,35 @@ class BluetoothManager:
     def archive_pgn_file(self, data):
         try:
             data_json = json.loads(data)
-            file_name = data_json["name"]
-            if FileManager.is_valid_pgn_file_name(file_name):
+            file_name = data_json.get("name", None)
+            archive_all = data_json.get("all", False)
+            if archive_all:
+                FileManager.archive_all()
+            elif file_name is None:
+                print("Received no filename and archive_all was false. Nothing to do. ")
+            elif FileManager.is_valid_pgn_file_name(file_name):
                 FileManager.archive_file(file_name)
-                self.send_num_games_to_upload()
             else:
                 print(f"Recieved invalid file name: {file_name}")
         except (ValueError, KeyError):
             print("Error archiving file")
             traceback.print_exc()
+        self.send_num_games_to_upload()
 
     # Not included in send_all, because this should only be called when the client specifically requests it.
     def send_pgn_files(self):
+        print("send_pgn_files() called")
         saved_games = FileManager.saved_games()
-        data = json.dumps({"files":saved_games})
-        self.write_message(ServerToClientActions.RET_PGN_FILES, data)
+        messages = []
+        for game in saved_games:
+            messages.append(
+                Message(
+                    ServerToClientActions.RET_PGN_FILE,
+                    json.dumps(game)
+                )
+            )
+        messages.append(Message(ServerToClientActions.PGN_FILES_DONE, ""))
+        self.write_messages(messages)
 
     def send_all(self):
         self.send_settings()
@@ -318,8 +341,14 @@ class BluetoothManager:
         data = json.dumps({"gamesToUpload": len(FileManager.saved_games())})
         self.write_message(ServerToClientActions.STATE_CHANGED, data)
 
-
     # Writes data to the via bluetooth. may be called from any thread
+    def write_messages(self, messages):
+        self._event_loop.call_soon_threadsafe(self._write_messages, messages)
+
+    def _write_messages(self, messages):
+        for message in messages:
+            self._write(message.action, message.data)
+
     def write_message(self, action, data):
         self._event_loop.call_soon_threadsafe(self._write, action, data)
 
