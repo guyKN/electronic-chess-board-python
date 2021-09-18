@@ -126,9 +126,9 @@ class StateManager:
             start_fen = chess.STARTING_FEN
         self.game = self.create_game(game_id=game_id, start_fen=start_fen)
         self.go_to_state(self.waiting_for_piece_setup_state)
+        self.bluetooth_manager.send_board_state()
         self.bluetooth_manager.send_game()
-
-
+        self.bluetooth_manager.send_board_state()
 
     # todo: bring back pgn round, or replace it with another form of id
     def create_game(self, bluetooth_player = None, game_id = None, start_fen = chess.STARTING_FEN):
