@@ -117,14 +117,14 @@ class WaitingForSetupState(State):
 
 
 class WaitingToPowerOffState(State):
-    POWER_OFF_DELAY_SHORT = 10
-    POWER_OFF_DELAY_LONG = 30
+    POWER_OFF_DELAY_SHORT = 20
+    POWER_OFF_DELAY_LONG = 60
     state_manager: StateManager
 
     def __init__(self, on_cancel_state: State, state_manager: StateManager, is_long_delay):
         self.state_manager = state_manager
         self.on_cancel_state = on_cancel_state
-        self.power_off_delay = WaitingToPowerOffState.POWER_OFF_DELAY_LONG if is_long_delay else WaitingToPowerOffState.POWER_OFF_DELAY_LONG
+        self.power_off_delay = WaitingToPowerOffState.POWER_OFF_DELAY_LONG if is_long_delay else WaitingToPowerOffState.POWER_OFF_DELAY_SHORT
         self.shutdown_delay_handle = None
         self.cancel_delay_handle = None
 
