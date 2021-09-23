@@ -671,15 +671,16 @@ class ChessGame(State):
         return self._pgn_game
 
     def _player_name(self, player):
-        if self.player_types[player] == PlayerType.ENGINE:
+        player_type = self.player_types[player]
+        if player_type == PlayerType.ENGINE:
             return "Stockfish Level " + str(self.engine_skill)
-        elif self.player_types[player] == PlayerType.BLUETOOTH:
+        elif player_type == PlayerType.BLUETOOTH:
             return "Online Opponent"
         else:
-            return "Human"
+            return "Player"
 
     def _setup_pgn(self):
-        self._pgn_game.headers["Event"] = "Electronic Chess Board"
+        self._pgn_game.headers["Event"] = "Electronic Chessboard"
         self._pgn_game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
         self._pgn_game.headers["Round"] = str(self._pgn_round)
         self._pgn_game.headers["White"] = self._player_name(chess.WHITE)

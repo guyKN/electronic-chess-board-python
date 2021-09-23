@@ -103,6 +103,8 @@ class StateManager:
     def force_bluetooth_moves(self, game_id: str, bluetooth_player: chess.Color, moves: str, forced_winner: str):
         if not self.is_game_active() or game_id is None or game_id != self.game.game_id:
             # the requested game has a different id than the current game, so we need to create a new game
+            if self.game is not None:
+                self.game.finish_game()
             self.game = self.create_game(bluetooth_player=bluetooth_player, game_id=game_id)
             self.go_to_state(self.waiting_for_piece_setup_state)
         try:
@@ -118,6 +120,8 @@ class StateManager:
             raise ValueError("Invalid Engine Color")
         if engine_level < 1:
             raise ValueError("Invalid Engine Level")
+        if self.game is not None:
+            self.game.finish_game()
         self._engine_settings["enableEngine"] = enable_engine
         self._engine_settings["engineColor"] = engine_color
         self._engine_settings["engineSkill"] = engine_level
@@ -174,6 +178,7 @@ class StateManager:
         self.game = self.create_game()
         self.go_to_state(self.waiting_for_piece_setup_state)
         self.bluetooth_manager.send_game()
+
 
     def on_game_end(self):
         if self.game.should_save_game():
