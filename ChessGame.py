@@ -118,7 +118,7 @@ class WaitingForSetupState(State):
 
 class WaitingToPowerOffState(State):
     POWER_OFF_DELAY_SHORT = 20
-    POWER_OFF_DELAY_LONG = 60
+    POWER_OFF_DELAY_LONG = 60 # todo: change to even mode
     state_manager: StateManager
 
     def __init__(self, on_cancel_state: State, state_manager: StateManager, is_long_delay):
@@ -218,6 +218,7 @@ class PlayerMoveFromSquareState(State):
         extra_illegal_pieces = extra_pieces & ~self._legal_moves
 
         missing_pieces = self._chess_game.occupied() - physical_board_occupied
+        wrong_missing_pieces = missing_pieces - self._src_square_mask
         active_player_missing_pieces = missing_pieces & self._chess_game.active_player_pieces()
 
         opponent_missing_pieces = missing_pieces & self._chess_game.inactive_player_pieces()
@@ -227,8 +228,9 @@ class PlayerMoveFromSquareState(State):
         if active_player_missing_pieces != self._src_square_mask:
             # the player has canceled the move
             self._chess_game.go_to_state(self._on_cancel_state)
-        elif popcount(opponent_missing_pieces_legal) == 1 \
-                and not opponent_missing_pieces_illegal and not extra_pieces:
+        elif popcount(opponent_missing_pieces_legal) == 1 and\
+                not opponent_missing_pieces_illegal and\
+                not extra_pieces:
             # the player has started picked up an enemy piece for capture
             self._capture_square = lsb(opponent_missing_pieces_legal)
             boardController.setLeds(const_leds=square_mask(self._capture_square), slow_blink_leds=self._src_square_mask)
@@ -236,18 +238,26 @@ class PlayerMoveFromSquareState(State):
             # the player has made a legal capture
             move = self._chess_game.find_move(self._src_square, self._capture_square)
             self.complete_move(move)
-
         elif popcount(extra_legal_pieces) == 1 and not extra_illegal_pieces and not opponent_missing_pieces:
             # the player has made a legal non-capture move
             dst_square = lsb(extra_legal_pieces)
             move = self._chess_game.find_move(self._src_square, dst_square)
             self.complete_move(move)
-        else:
+        elif extra_pieces or wrong_missing_pieces:
+            # Some pieces are wrong or illegally placed, blink the locations of those pieces.
             boardController.setLeds(
-                const_leds=self._legal_moves if self._chess_game.learning_mode else self._src_square_mask,
-                slow_blink_leds=self._src_square_mask if self._chess_game.learning_mode else 0,
                 fast_blink_leds=extra_pieces,
-                fast_blink_leds_2=missing_pieces ^ self._src_square_mask)
+                fast_blink_leds_2=missing_pieces
+            )
+        elif self._chess_game.learning_mode:
+            # Show all legal moves if learning mode is enabled.
+            boardController.setLeds(
+                const_leds=self._legal_moves,
+                slow_blink_leds=self._src_square_mask
+            )
+        else:
+            # Show only the square being picked up if learning mode is disabled.
+            boardController.setLeds(const_leds = self._src_square_mask)
 
     def complete_move(self, move):
         complete_move_state = CompleteMoveState(self._chess_game, move, self)
@@ -269,6 +279,9 @@ class CompleteMoveState(State):
         self._changed_squares = self._occupied_before_move ^ self._occupied_after_move
         self._changed_squares_indirect = self._changed_squares - (self._src_mask | self._dst_mask)
 
+        self.pieces_to_remove = self._occupied_before_move - self._occupied_after_move - (self._src_mask | self._dst_mask)
+        self.pieces_to_add = self._occupied_after_move - self._occupied_before_move - (self._src_mask | self._dst_mask)
+
     def on_enter_state(self):
         pass
 
@@ -284,7 +297,7 @@ class CompleteMoveState(State):
             self._chess_game.go_to_state(self._on_cancel_state)
         else:
             boardController.setLeds(const_leds=0,  # should there be constant leds?
-                                    slow_blink_leds=extra_pieces, slow_blink_leds_2=missing_pieces)
+                                    slow_blink_leds=self.pieces_to_add, slow_blink_leds_2=self.pieces_to_remove)
 
     def confirm_move(self):
         confirm_move_state = ConfirmMoveState(self._chess_game, self._move, self)
@@ -353,8 +366,7 @@ class ForceMoveState(State):
         self.src_mask = square_mask(engine_move.from_square)
         self.dst_mask = square_mask(engine_move.to_square)
 
-        self.changed_squares = (self.occupied_before_move ^ self.occupied_after_move) | square_mask(
-            engine_move.to_square)
+        self.changed_squares = (self.occupied_before_move ^ self.occupied_after_move) | square_mask(engine_move.to_square)
         self.changed_squares_direct = self.src_mask | self.dst_mask
         self.changed_squares_indirect = self.changed_squares - self.changed_squares_direct
         self.pieces_to_remove_indirect = self.changed_squares_indirect & self.occupied_before_move
@@ -370,6 +382,9 @@ class ForceMoveState(State):
         wrong_pieces = physical_board_occupied ^ self.occupied_after_move
         extra_pieces = physical_board_occupied - self.occupied_after_move
         missing_pieces = self.occupied_after_move - physical_board_occupied
+
+        extra_pieces_for_before_move = physical_board_occupied - self.occupied_before_move
+        missing_pieces_for_before_move = self.occupied_before_move - physical_board_occupied
 
         wrong_pieces_illegal = wrong_pieces - self.changed_squares
         extra_pieces_illegal = extra_pieces - self.changed_squares
@@ -390,20 +405,24 @@ class ForceMoveState(State):
             # The player has made the move
             self.chess_game.do_move(self.move, is_forced_move=True)
             self.on_complete_callback()
+        elif wrong_pieces_illegal:
+            # The player placed a piece in an incorrect place, or removed an incorrect piece. blink LEDs to show the wrong pieces.
+            boardController.setLeds(
+                fast_blink_leds=extra_pieces_for_before_move,
+                fast_blink_leds_2=missing_pieces_for_before_move
+            )
         elif wrong_pieces_direct or (self.is_capture and (not self.capture_picked_up)):
             # The player has not yet moved the piece from its source to its destination
-            boardController.setLeds(slow_blink_leds=self.src_mask, slow_blink_leds_2=self.dst_mask,
-                                    fast_blink_leds=extra_pieces_illegal, fast_blink_leds_2=missing_pieces_illegal)
+            boardController.setLeds(slow_blink_leds=self.src_mask, slow_blink_leds_2=self.dst_mask)
         else:
             # the player has made the base move, but hasn't moved any of the indirectly changed squares (castling, en passant)
             boardController.setLeds(slow_blink_leds=self.pieces_to_remove_indirect,
-                                    slow_blink_leds_2=self.pieces_to_add_indirect,
-                                    fast_blink_leds=extra_pieces_illegal, fast_blink_leds_2=missing_pieces_illegal)
+                                    slow_blink_leds_2=self.pieces_to_add_indirect
+            )
 
 
 class ForceMultipleMovesState(State):
     def __init__(self, chess_game: ChessGame, moves: Iterable[chess.Move], forced_winner: str):
-        print(f"inside ForceMultipleMovesState.__init__, forced_winner={forced_winner}")
         self.move_iterator = iter(moves)
         self.chess_game = chess_game
         self.forced_winner = forced_winner
@@ -544,8 +563,7 @@ class ChessGame(State):
         self.state.on_enter_state()
 
     def on_board_changed(self, board: chess.SquareSet):
-        if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES:
-            # todo: allow players to move to the starting position with a legal move
+        if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES and not self.has_move_to_starting_board():
             # the player has set the pieces back to their original positions, so the game is restarted immediately
             self.finish_and_restart_game()
         elif self.should_abort(board) and not self.is_aborting():
@@ -554,6 +572,14 @@ class ChessGame(State):
             self.go_to_state(abort_later_state)
         else:
             self.state.on_board_changed(board)
+
+    # returns true if there exists a legal move after which the board will be the starting board.
+    # used in order to prevent the game from automatically restarting when the player does a legitimate move that goes back to the starting position.
+    def has_move_to_starting_board(self):
+        for move in self._board.legal_moves:
+            if self.occupied_after_move(move) == STARTING_SQUARES:
+                return True
+        return False
 
     def on_leave_state(self):
         self.is_active = False
