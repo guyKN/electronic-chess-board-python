@@ -118,7 +118,7 @@ class WaitingForSetupState(State):
 
 class WaitingToPowerOffState(State):
     POWER_OFF_DELAY_SHORT = 20
-    POWER_OFF_DELAY_LONG = 60 # todo: change to even mode
+    POWER_OFF_DELAY_LONG = 60 * 5
     state_manager: StateManager
 
     def __init__(self, on_cancel_state: State, state_manager: StateManager, is_long_delay):
