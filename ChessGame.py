@@ -639,14 +639,14 @@ class ChessGame(State):
             loser_king = self._board.pieces(chess.KING, chess.WHITE)
             game_end_indicator = GameEndIndicatorState(loser_king, self)
             return game_end_indicator
-        if self._board.is_checkmate():
+        if self._board.is_checkmate() and not self.is_bluetooth_game:
             self._pgn_game.headers["Result"] = self._board.result()
             self.is_game_over = True
             loser_king = self._board.pieces(chess.KING, self._board.turn)
             game_end_indicator = GameEndIndicatorState(loser_king, self)
             return game_end_indicator
-        elif self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.can_claim_draw() or forced_winner == "draw":
-            self._pgn_game.headers["Result"] = self._board.result(claim_draw=True)
+        elif forced_winner == "draw" or (not self.is_bluetooth_game and self.is_draw()):
+            self._pgn_game.headers["Result"] = "1/2-1/2"
             self.is_game_over = True
             kings = self._board.kings
             game_end_indicator = GameEndIndicatorState(kings, self)
@@ -657,6 +657,9 @@ class ChessGame(State):
             return PlayerMoveBaseState(self)
         elif self.player_types[self._board.turn] is PlayerType.BLUETOOTH:
             return IdleState(self)
+
+    def is_draw(self):
+        return self._board.is_stalemate() or self._board.is_insufficient_material() or self._board.is_repetition() or self._board.is_fifty_moves()
 
     def is_started(self):
         return len(self._board.move_stack) != 0 and not self.is_game_over

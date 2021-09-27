@@ -359,7 +359,7 @@ class BluetoothManager:
             print()
         _assert_thread("write-thread", "Must call write() from the write thread")
         if self._client_socket is None:
-            if DEBUG_BLUETOOTH_MESSAGES: print(f"{ERROR_TAG}: Tried to write bluetooth message while not connected to client.")
+            if DEBUG_BLUETOOTH_MESSAGES: print(f"Tried to write bluetooth message while not connected to client.")
             return False
         try:
             self._client_socket.send(BluetoothManager.encode_message(action, data))
