@@ -50,6 +50,11 @@ is_test = is_test()
 is_led_test = is_led_test()
 
 try:
+    if is_test:
+        # if running on version from command line, disable the version running from the service, so that this program only runs in one place at a time.
+        print("running stop.sh")
+        os.system("bash /home/pi/commands/stop.sh")
+
     boardController.setLedRefreshRate(125)
     boardController.setUseEqualBrightness(True)
     boardController.init()
