@@ -20,7 +20,6 @@ def _assert_thread(thread_name, error_message):
     if threading.current_thread().name != thread_name:
         raise RuntimeError(error_message)
 
-
 def parse_color(color: str) -> chess.Color:
     if color == "white":
         return chess.WHITE
@@ -30,8 +29,10 @@ def parse_color(color: str) -> chess.Color:
         raise ValueError("color must be black or white")
 
 
-DEBUG_MESSAGES = True
+DEBUG_BLUETOOTH_MESSAGES = True
 
+BLUETOOTH_STATE_TAG = "BluetoothState"
+ERROR_TAG = "Error"
 
 class ClientToServerActions:
     """
@@ -176,7 +177,7 @@ class BluetoothManager:
 
     def _connection_loop(self):
         _assert_thread("read-thread", "Must call _connection_loop() from the read thread")
-        print("trying to connect via bluetooth")
+        print(f"{BLUETOOTH_STATE_TAG}: listening for bluetooth connection. ")
         while True:
             self._server_socket = BluetoothSocket(bluetooth.RFCOMM)
             os.system("sudo hciconfig hci0 piscan")
@@ -191,7 +192,7 @@ class BluetoothManager:
                                         )
 
             self._client_socket, self._client_info = self._server_socket.accept()
-            print("connected by bluetooth")
+            print(f"{BLUETOOTH_STATE_TAG}: Connected via bluetooth. ClientInfo: {self._client_info} ")
             self.send_all()
             self._read_loop()
 
@@ -200,27 +201,26 @@ class BluetoothManager:
         try:
             while True:
                 action = self._client_socket.recv(1)[0]
-                if DEBUG_MESSAGES:
-                    print()
-                    print("recieved message: ")
-                    print("action: ", action)
                 message_length_bytes = self._client_socket.recv(BluetoothManager.MESSAGE_HEAD_LENGTH)
                 message_length = int.from_bytes(message_length_bytes, "big", signed=True)
-                if DEBUG_MESSAGES: print("message_length: ", message_length)
                 if message_length != 0:
                     data = self._client_socket.recv(message_length).decode("utf-8")
                 else:
                     data = ""
-                if DEBUG_MESSAGES: print("data: '{}'\n".format(data))
                 self._handle_message(action, data)
         except IOError:
-            print("disconnected from bluetooth")
+            print(f"{BLUETOOTH_STATE_TAG}: Bluetooth Disconnected.")
 
         self._client_socket.close()
         self._client_socket = None
         self._client_info = None
 
     def _handle_message(self, action, data):
+        if DEBUG_BLUETOOTH_MESSAGES:
+            print()
+            print(f"Received message:\naction: {action}, data: \n{data}")
+            print()
+
         if action == ClientToServerActions.WRITE_PREFERENCES:
             self.call_on_main_thread(self.write_settings, data)
         elif action == ClientToServerActions.START_NORMAL_GAME:
@@ -259,7 +259,7 @@ class BluetoothManager:
                                                      game_id=parameters.get("gameId", None),
                                                      start_fen=parameters.get("startFen", None))
         except (ValueError, KeyError) as e:
-            print("Error starting game")
+            print(f"{ERROR_TAG}: Error starting game")
             traceback.print_exc()
 
     def force_bluetooth_moves(self, data):
@@ -272,7 +272,7 @@ class BluetoothManager:
                 forced_winner=parameters.get("winner", None)
             )
         except (ValueError, KeyError):
-            print("Error starting game")
+            print(f"{ERROR_TAG}: Error starting game")
             traceback.print_exc()
 
     def archive_pgn_file(self, data):
@@ -283,19 +283,18 @@ class BluetoothManager:
             if archive_all:
                 FileManager.archive_all()
             elif file_name is None:
-                print("Received no filename and archive_all was false. Nothing to do. ")
+                print(f"{ERROR_TAG}: archive_pgn_file() Received no filename and archive_all was false. Nothing to do.")
             elif FileManager.is_valid_pgn_file_name(file_name):
                 FileManager.archive_file(file_name)
             else:
-                print(f"Recieved invalid file name: {file_name}")
+                print(f"{ERROR_TAG}: archive_pgn_file() received invalid file name: {file_name}")
         except (ValueError, KeyError):
-            print("Error archiving file")
+            print(f"{ERROR_TAG}: Error archiving file")
             traceback.print_exc()
         self.send_num_games_to_upload()
 
     # Not included in send_all, because this should only be called when the client specifically requests it.
     def send_pgn_files(self):
-        print("send_pgn_files() called")
         saved_games = FileManager.saved_games()
         messages = []
         for game in saved_games:
@@ -354,18 +353,17 @@ class BluetoothManager:
 
     # must be called from the thread 'write-tread'
     def _write(self, action, data):
-        if DEBUG_MESSAGES:
+        if DEBUG_BLUETOOTH_MESSAGES:
             print()
-            print("writing message: ")
-            print("action: ", action)
-            print("data: '{}'".format(data))
+            print(f"Writing message:\naction: {action}, data: \n{data}")
             print()
         _assert_thread("write-thread", "Must call write() from the write thread")
         if self._client_socket is None:
-            if DEBUG_MESSAGES: print("Failed to write bluetooth message")
+            if DEBUG_BLUETOOTH_MESSAGES: print(f"{ERROR_TAG}: Tried to write bluetooth message while not connected to client.")
             return False
         try:
             self._client_socket.send(BluetoothManager.encode_message(action, data))
             return True
-        except (IOError, AttributeError):
+        except (IOError, AttributeError) as e:
+            if DEBUG_BLUETOOTH_MESSAGES: print(f"{ERROR_TAG}: Error writing bluetooth message. ")
             return False

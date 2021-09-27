@@ -50,7 +50,6 @@ is_test = is_test()
 is_led_test = is_led_test()
 
 try:
-    print("newest version 5!")
     boardController.setLedRefreshRate(125)
     boardController.setUseEqualBrightness(True)
     boardController.init()
@@ -60,7 +59,7 @@ try:
         state_manager = StateManager(is_test=is_test)
         state_manager.game_loop()
 finally:
-    print("cleanup")
+    print("Program finished. Cleaning up. ")
     boardController.cleanup()
     if state_manager is not None:
         state_manager.cleanup()

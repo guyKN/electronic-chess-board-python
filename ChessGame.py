@@ -157,7 +157,7 @@ class WaitingToPowerOffState(State):
                 self.cancel_delay_handle = None
 
     def shutdown_system(self):
-        print("Exiting Program.. ")
+        print("WaitingToPowerOffState exiting Program.")
         asyncio.get_running_loop().stop()
 
 
@@ -594,7 +594,6 @@ class ChessGame(State):
 
     # todo: handle ValueErrors when calling this method
     def force_moves(self, moves_string: str, forced_winner: str):
-        print(f"inside force_moves, forced_winner={forced_winner}")
         if not self.is_bluetooth_game:
             raise ValueError("Moves may only be forced from an external source when playing a bluetooth game.")
 
@@ -628,7 +627,6 @@ class ChessGame(State):
         self.go_to_state(self.state_for_next_move(forced_winner))
 
     def state_for_next_move(self, forced_winner = None):
-        print(f"inside state_for_next_move, forced_winner={forced_winner}")
         if forced_winner == "white":
             self._pgn_game.headers["Result"] = "1-0"
             self.is_game_over = True
@@ -776,8 +774,9 @@ class ChessGame(State):
             try:
                 entry = self._opening_book.choice(self._board)
                 await asyncio.sleep(0.2)  # todo: make a better delay
-                print("Engine move from opening book: ", str(entry.move))
+                print("Engine chose move from opening book: ", str(entry.move))
                 callback(entry.move)
+                # todo: since this doesn't return, is the rest of the code also run?
             except IndexError:
                 # there is no stored entry in the opening book. Use the engine normally
                 pass
@@ -789,7 +788,7 @@ class ChessGame(State):
                                         info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
                                         options={"Skill Level": stockfish_skill_level})
         print()
-        print("engine move: ", result.move)
+        print("Engine chose move: ", result.move)
         print("time: ", result.info["time"])
         print("nps: ", result.info["nps"])
         print("score: ", result.info["score"])
@@ -797,6 +796,8 @@ class ChessGame(State):
         print()
 
         callback(result.move)
+
+
 
     def test_leds(self):
         if isinstance(self.state, LedTestState):

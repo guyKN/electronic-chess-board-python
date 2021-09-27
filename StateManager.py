@@ -30,7 +30,7 @@ def exception_handler(loop, context):
     # first, handle with default handler
     loop.default_exception_handler(context)
     print(context)
-    print("exception occurred")
+    print("exception occurred, stopping program")
     loop.stop()
 
 class StateManager:
@@ -51,7 +51,6 @@ class StateManager:
             callback=lambda board:
                 self.event_loop.call_soon_threadsafe(self.on_board_change, board))
         self._settings = FileManager.read_settings()
-        print(f"self._settings: {self._settings}")
         self._engine_settings = FileManager.read_engine_settings()
         self.configure_engine_after_game()
 
@@ -114,7 +113,7 @@ class StateManager:
 
     def on_game_start_request(self, enable_engine, engine_color, engine_level, game_id=None, start_fen = None):
         if self.game is not None and self.game.game_id is not None and self.game.game_id == game_id:
-            print("request to start game with the same id. Skipping. ")
+            print("on_game_start_request(): request to start game with the same id. Skipping. ")
             return
         if engine_color != "white" and engine_color != "black":
             raise ValueError("Invalid Engine Color")
@@ -135,7 +134,6 @@ class StateManager:
 
     # todo: bring back pgn round, or replace it with another form of id
     def create_game(self, bluetooth_player = None, game_id = None, start_fen = chess.STARTING_FEN):
-        print("creating game. ")
         if game_id is None:
             game_id = generate_game_id()
         if bluetooth_player is None:
@@ -147,8 +145,6 @@ class StateManager:
         else:
             white_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.WHITE else PlayerType.HUMAN
             black_player_type = PlayerType.BLUETOOTH if bluetooth_player == chess.BLACK else PlayerType.HUMAN
-
-        print(self._settings)
 
         return ChessGame(learning_mode=self._settings["learningMode"],
                          white_player_type=white_player_type,
