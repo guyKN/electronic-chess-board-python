@@ -560,7 +560,7 @@ class ChessGame(State):
 
     def on_enter_state(self):
         self.is_active = True
-        self.state.on_enter_state()
+        self.state_manager.init_state(self.state)
 
     def on_board_changed(self, board: chess.SquareSet):
         if board == STARTING_SQUARES and self.occupied() != STARTING_SQUARES and not self.has_move_to_starting_board():

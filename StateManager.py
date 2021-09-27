@@ -16,6 +16,8 @@ import random
 import string
 # engine path: "/home/pi/chess-engine/stockfish3/Stockfish-sf_13/src/stockfish"
 
+DEBUG_STATES = True
+
 def open_opening_book(path="/home/pi/chess-engine/opening-book/Perfect2021.bin"):
     return chess.polyglot.open_reader(path)
 
@@ -59,7 +61,7 @@ class StateManager:
         self.game = self.create_game()
         self.waiting_for_piece_setup_state = WaitingForSetupState(self)
         self.state = self.waiting_for_piece_setup_state
-        self.state.on_enter_state()
+        self.init_state(self.state)
 
 
     def game_loop(self):
@@ -80,6 +82,7 @@ class StateManager:
     Should not be called by non-parent states. those use go_to_state()
     """
     def init_state(self, state):
+        if DEBUG_STATES: print(f"Entering State: {type(state).__name__}")
         state.on_enter_state()
         state.on_board_changed(self.board)
 
