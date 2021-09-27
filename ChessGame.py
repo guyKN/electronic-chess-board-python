@@ -776,7 +776,7 @@ class ChessGame(State):
                 await asyncio.sleep(0.2)  # todo: make a better delay
                 print("Engine chose move from opening book: ", str(entry.move))
                 callback(entry.move)
-                # todo: since this doesn't return, is the rest of the code also run?
+                return
             except IndexError:
                 # there is no stored entry in the opening book. Use the engine normally
                 pass
@@ -788,6 +788,7 @@ class ChessGame(State):
                                         info=chess.engine.Info(chess.engine.INFO_BASIC | chess.engine.INFO_SCORE),
                                         options={"Skill Level": stockfish_skill_level})
         print()
+        print(f"Engine: stockfish level {stockfish_skill_level}")
         print("Engine chose move: ", result.move)
         print("time: ", result.info["time"])
         print("nps: ", result.info["nps"])
